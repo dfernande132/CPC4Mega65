@@ -74,27 +74,28 @@ type WHS_RECORD_ARRAY_TYPE is array (0 to WHS_RECORDS - 1) of WHS_RECORD_TYPE;
 -- Within a selector's address range, address 0 is the beginning of the string itself, while address 0xFFF of the 4k
 -- window contains the amount of pages, so each zero-terminated string can be up to 4095 bytes = 4094 characters long.
 
+-- CPC4MEGA65: texto al estilo del de QL4M65 (learning_cores/QL4M65/CORE/vhdl/config.vhd) -
+-- mismo formato pedido por el usuario. "Status" lleva el numero de build de la ultima
+-- compilacion real (ej. "M1B003") en vez de un numero de version publicada (todavia no hay
+-- release, ver DECISIONES.md) - actualizar esta linea en cada build nueva, a peticion del
+-- usuario (2026-09-05), sin que eso cuente como una compilacion aparte: se actualiza junto
+-- con cualquier otro cambio que ya vaya a compilarse.
 constant SCR_WELCOME : string :=
 
-   "Name of the Demo Core Version 1.0\n" &
-   "MiSTer port done by Demo Author in 2022\n\n" &
+   "Amstrad CPC for MEGA65 (CPC4MEGA65)\n" &
+   "Developed by dfsantos (2026)\n\n\n" &
+   "Status: Milestone 1 - Build M1B006\n\n" &
 
-   -- We are not insisting. But it would be nice if you gave us credit for MiSTer2MEGA65 by leaving these lines in
-   "Powered by MiSTer2MEGA65 Version [WIP],\n" &
-   "done by sy2002 and MJoergen in 2022\n" &
+   "Based on MiSTer-devel/Amstrad_MiSTer\n" &
+   "Powered by MiSTer2MEGA65,\n" &
+   "done by sy2002 and MJoergen\n\n" &
 
-   "\n\nEdit config.vhd to modify welcome screen.\n\n" &
-   "You can for example show the keyboard map.\n" &
-   "Look at this example for the Demo core:\n\n\n" &
+   "CPC Core includes:\n" &
+   " - PAL video\n" &
+   " - Native CPC6128 (128k RAM)\n" &
+   " - Keyboard\n\n\n" &
 
-   "    Key                Demo core\n" &
-   "    " & CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_1 & CHR_LINE_1 & "\n" &
-   "    Left Cursor        Paddle left\n" &
-   "    Right Cursor       Paddle right\n" &
-   "    Space              Start game\n" &
-   "    Help               Options menu\n\n\n" &
-
-   "\n\n    Press Space to continue.\n\n\n";
+   "    Press Space to continue.\n\n\n";
 
 constant HELP_1 : string :=
 
@@ -188,8 +189,10 @@ constant SEL_CFG_FILE      : std_logic_vector(15 downto 0) := x"0101";
 
 -- START YOUR CONFIGURATION BELOW THIS LINE
 
-constant DIR_START         : string := "/m2m";
-constant CFG_FILE          : string := "/m2m/m2mcfg";
+-- CPC4MEGA65: mismo directorio que usan las ROMs auto-cargadas en globals.vhd
+-- (C_CRTROMS_AUTO_NAMES, "/cpc4mega65/...").
+constant DIR_START         : string := "/cpc4mega65";
+constant CFG_FILE          : string := "/cpc4mega65/m2mcfg";
 
 --------------------------------------------------------------------------------------------------------------------
 -- General configuration settings: Reset, Pause, OSD behavior, Ascal, etc. (Selector 0x0110)
@@ -268,7 +271,7 @@ constant SEL_CORENAME      : std_logic_vector(15 downto 0) := x"0200";
 
 -- Currently this is only used in the debug console. Use the welcome screen and the
 -- help system to display the name and version of your core to the end user
-constant CORENAME          : string := "M2M DEMO CORE V1.0";
+constant CORENAME          : string := "CPC4MEGA65 M1";
 
 --------------------------------------------------------------------------------------------------------------------
 -- "Help" menu / Options menu  (Selectors 0x0300 .. 0x0312): DO NOT TOUCH
@@ -329,7 +332,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 35;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 16;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -337,61 +340,57 @@ constant OPTM_SIZE         : natural := 35;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 24;
+constant OPTM_DY           : natural := 9;   -- alto real del menu principal (9 lineas visibles)
 
+-- CPC4MEGA65 (M1B003): menu propio. El de la plantilla traia tres items "Drive X/Y/Z" con el
+-- atributo OPTM_G_MOUNT_DRV, y con C_VDNUM=0 (sin disquetera hasta Milestone 2) el firmware
+-- del Shell aborta con "FATAL ERROR: More menu items have the attribute OPTM_G_MOUNT_DRV than
+-- there are virtual drives configured in globals.vhd using C_VDNUM" al abrir el OSD - visto en
+-- hardware real con M1B002. Tambien se quitan los items de demo (Item A.1..A.4), que no
+-- controlaban nada. Se conserva lo que si esta cableado de verdad en mega65.vhd: el submenu de
+-- modos HDMI y los tres toggles (CRT emulation / Zoom-in / Audio improvements).
+--
+-- AVISO (Video Pipeline wiki, S3.4 - "el foot-gun mas comun de este fichero"): las constantes
+-- C_MENU_* de mega65.vhd son numeros de linea de ESTE menu, empezando en 0, y nada comprueba
+-- que sigan cuadrando al reordenar lineas. Si se toca este menu, hay que reajustarlas.
+--
+-- CPC4MEGA65 (M1B006): solo se ofrecen modos HDMI de 50Hz, por dos razones independientes:
+--   1. El CPC es una maquina PAL de 50Hz - mismo criterio que AExp, que documenta "An OCS PAL
+--      Amiga is a 50 Hz machine, so only 50 Hz HDMI modes are offered".
+--   2. Los modos mas estrechos que VGA_DX son una MINA: digital_pipeline.vhd calcula
+--      hdmi_shift = H_PIXELS - VGA_DX y lo mete en un puerto 'natural'. Con VGA_DX=720, el
+--      modo "640x480 60 Hz" (H_PIXELS=640) da -80 -> violacion de rango, el mismo fallo que
+--      casi se cuela en M1B004 al subir VGA_DX a 768. Quitando los modos de 60Hz desaparece
+--      tambien el unico modo con H_PIXELS < 720.
 constant OPTM_ITEMS        : string :=
 
-   " Demo Headline A\n"     &
-   "\n"                     &
-   " Item A.1\n"            &
-   " Item A.2\n"            &
-   " Item A.3\n"            &
-   " Item A.4\n"            &
-   "\n"                     &
-   " Demo Headline B\n"     &
-   "\n"                     &
-
-   " HDMI: %s\n"            &    -- HDMI submenu
-   " HDMI Settings\n"       &
-   "\n"                     &
-   " 720p 50 Hz 16:9\n"     &
-   " 720p 60 Hz 16:9\n"     &
-   " 576p 50 Hz 4:3\n"      &
-   " 576p 50 Hz 5:4\n"      &
-   " 640x480 60 Hz\n"       &
-   " 720x480 59.94 Hz\n"    &
-   " 800x600 60 Hz\n"       &
-   "\n"                     &
-   " Back to main menu\n"   &
-
-   "\n"                     &
-   " Drives\n"              &
-   "\n"                     &
-   " Drive X:%s\n"          &
-   " Drive Y:%s\n"          &
-   " Drive Z:%s\n"          &
-   "\n"                     &
-   " Another Headline\n"    &
-   "\n"                     &
-   " HDMI: CRT emulation\n" &
-   " HDMI: Zoom-in\n"       &
-   " Audio improvements\n"  &
-   "\n"                     &
-   " Close Menu\n";
+   " Amstrad CPC 6128\n"    &    -- 0
+   "\n"                     &    -- 1
+   " HDMI: %s\n"            &    -- 2   submenu HDMI: inicio
+   " HDMI Settings\n"       &    -- 3
+   "\n"                     &    -- 4
+   " 720p 50 Hz 16:9\n"     &    -- 5   <- C_MENU_HDMI_16_9_50
+   " 576p 50 Hz 4:3\n"      &    -- 6   <- C_MENU_HDMI_4_3_50
+   " 576p 50 Hz 5:4\n"      &    -- 7   <- C_MENU_HDMI_5_4_50
+   "\n"                     &    -- 8
+   " Back to main menu\n"   &    -- 9   submenu HDMI: fin
+   "\n"                     &    -- 10
+   " HDMI: CRT emulation\n" &    -- 11  <- C_MENU_CRT_EMULATION
+   " HDMI: Zoom-in\n"       &    -- 12  <- C_MENU_HDMI_ZOOM
+   " Audio improvements\n"  &    -- 13  <- C_MENU_IMPROVE_AUDIO
+   "\n"                     &    -- 14
+   " Close Menu\n";              -- 15
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
 -- and be aware that you can only have a maximum of 254 groups (255 means "Close Menu");
 -- also make sure that your group numbers are monotonic increasing (e.g. 1, 2, 3, 4, ...)
 -- single-select items and therefore also drive mount items need to have unique identifiers
-constant OPTM_G_Demo_A     : integer := 1;
-constant OPTM_G_HDMI       : integer := 2;
-constant OPTM_G_Drive_X    : integer := 3;
-constant OPTM_G_Drive_Y    : integer := 4;
-constant OPTM_G_Drive_Z    : integer := 5;
-constant OPTM_G_CRT        : integer := 6;
-constant OPTM_G_Zoom       : integer := 7;
-constant OPTM_G_Audio      : integer := 8;
+-- CPC4MEGA65 (M1B003): sin grupos de demo ni de unidades (ver comentario de OPTM_ITEMS)
+constant OPTM_G_HDMI       : integer := 1;
+constant OPTM_G_CRT        : integer := 2;
+constant OPTM_G_Zoom       : integer := 3;
+constant OPTM_G_Audio      : integer := 4;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -399,44 +398,24 @@ type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC-
 -- define your menu groups: which menu items are belonging together to form a group?
 -- where are separator lines? which items should be selected by default?
 -- make sure that you have exactly the same amount of entries here than in OPTM_ITEMS and defined by OPTM_SIZE
-constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Demo Headline A"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_Demo_A + OPTM_G_START,             -- Item A.1, cursor start position
-                                             OPTM_G_Demo_A + OPTM_G_STDSEL,            -- Item A.2, selected by default
-                                             OPTM_G_Demo_A,                            -- Item A.3
-                                             OPTM_G_Demo_A,                            -- Item A.4
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Demo Headline B"
-                                             OPTM_G_LINE,                              -- Line
+constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            --  0 Headline "Amstrad CPC 6128"
+                                             OPTM_G_LINE,                              --  1 Line
 
-                                             OPTM_G_SUBMENU,                           -- HDMI submenu block: START: "HDMI: %s"
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "HDMI Settings"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 720p 50 Hz 16:9, selected by default
-                                             OPTM_G_HDMI,                              -- 720p 60 Hz 16:9
-                                             OPTM_G_HDMI,                              -- 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 576p 50 Hz 5:4
-                                             OPTM_G_HDMI,                              -- 640x480 60 Hz
-                                             OPTM_G_HDMI,                              -- 720x480 59.94 Hz
-                                             OPTM_G_HDMI,                              -- 600p 60 Hz
-                                             OPTM_G_LINE,                              -- open
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- Close submenu / back to main menu
-                                                                                       -- HDMI submenu block: END
+                                             OPTM_G_SUBMENU + OPTM_G_START,            --  2 HDMI submenu: START ("HDMI: %s"), cursor aqui
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  3 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              --  4 Line
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              --  5 720p 50 Hz 16:9, por defecto
+                                             OPTM_G_HDMI,                              --  6 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              --  7 576p 50 Hz 5:4
+                                             OPTM_G_LINE,                              --  8 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            --  9 HDMI submenu: END
 
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Drives"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_Drive_X + OPTM_G_MOUNT_DRV,        -- Drive X
-                                             OPTM_G_Drive_Y + OPTM_G_MOUNT_DRV,        -- Drive Y
-                                             OPTM_G_Drive_Z + OPTM_G_MOUNT_DRV,        -- Drive Z
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- Headline "Another Headline"
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- On/Off toggle ("Single Select")
-                                             OPTM_G_LINE,                              -- Line
-                                             OPTM_G_CLOSE                              -- Close Menu
+                                             OPTM_G_LINE,                              -- 10 Line
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 11 CRT emulation (on/off)
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 12 Zoom-in (on/off)
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 13 Audio improvements (on/off)
+                                             OPTM_G_LINE,                              -- 14 Line
+                                             OPTM_G_CLOSE                              -- 15 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

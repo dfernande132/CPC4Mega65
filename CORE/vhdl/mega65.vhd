@@ -236,25 +236,30 @@ signal main_rst               : std_logic;
 ---------------------------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------------------------
--- Democore & example stuff: Delete before starting to port your own core
+-- OSD video mode menu items (infraestructura generica del framework, no especifica del core)
 ---------------------------------------------------------------------------------------------
 
--- Democore menu items
-constant C_MENU_HDMI_16_9_50   : natural := 12;
-constant C_MENU_HDMI_16_9_60   : natural := 13;
-constant C_MENU_HDMI_4_3_50    : natural := 14;
-constant C_MENU_HDMI_5_4_50    : natural := 15;
-constant C_MENU_HDMI_640_60    : natural := 16;
-constant C_MENU_HDMI_720_5994  : natural := 17;
-constant C_MENU_SVGA_800_60    : natural := 18;
-constant C_MENU_CRT_EMULATION  : natural := 30;
-constant C_MENU_HDMI_ZOOM      : natural := 31;
-constant C_MENU_IMPROVE_AUDIO  : natural := 32;
+-- CPC4MEGA65 (M1B003): numeros de linea (base 0) del menu de config.vhd/OPTM_ITEMS. Nada
+-- comprueba automaticamente que sigan cuadrando - si se reordena el menu, hay que reajustar
+-- esto a mano (Video Pipeline wiki S3.4: "el foot-gun mas comun de este fichero").
+-- CPC4MEGA65 (M1B006): solo modos de 50Hz (maquina PAL), y ademas ninguno con H_PIXELS < 720,
+-- porque hdmi_shift = H_PIXELS - VGA_DX se mete en un 'natural' y se iria a negativo - ver el
+-- comentario largo en config.vhd/OPTM_ITEMS.
+constant C_MENU_HDMI_16_9_50   : natural := 5;
+constant C_MENU_HDMI_4_3_50    : natural := 6;
+constant C_MENU_HDMI_5_4_50    : natural := 7;
+constant C_MENU_CRT_EMULATION  : natural := 11;
+constant C_MENU_HDMI_ZOOM      : natural := 12;
+constant C_MENU_IMPROVE_AUDIO  : natural := 13;
 
--- QNICE clock domain
-signal qnice_demo_vd_data_o   : std_logic_vector(15 downto 0);
-signal qnice_demo_vd_ce       : std_logic;
-signal qnice_demo_vd_we       : std_logic;
+---------------------------------------------------------------------------------------------
+-- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
+---------------------------------------------------------------------------------------------
+
+signal qnice_rom_os_we        : std_logic;
+signal qnice_rom_os_data_o    : std_logic_vector(7 downto 0);
+signal qnice_rom_basic_we     : std_logic;
+signal qnice_rom_basic_data_o : std_logic_vector(7 downto 0);
 
 begin
 
@@ -312,11 +317,12 @@ begin
 
 
    -- MMCME2_ADV clock generators:
-   --   @TODO YOURCORE:       54 MHz
+   --   CPC4MEGA65: clk_sys del core original es 64MHz (ver globals.vhd/CORE_CLK_SPEED) -
+   --   @TODO M1B: ajustar clk.vhd para generar 64MHz reales desde los 100MHz de la placa
    clk_gen : entity work.clk
       port map (
          sys_clk_i         => clk_i,           -- expects 100 MHz
-         main_clk_o        => main_clk,        -- CORE's 54 MHz clock
+         main_clk_o        => main_clk,        -- CORE's clock (@TODO M1B: 64 MHz, ver arriba)
          main_rst_o        => main_rst         -- CORE's reset, synchronized
       ); -- clk_gen
 
@@ -344,6 +350,17 @@ begin
          reset_soft_i         => main_reset_core_i,
          reset_hard_i         => main_reset_m2m_i,
          pause_i              => main_pause_core_i,
+
+         -- CPC4MEGA65 M1A: puerto QNICE de las dos ROMs de arranque (ver main.vhd)
+         qnice_clk_i             => qnice_clk_i,
+         qnice_rom_os_we_i       => qnice_rom_os_we,
+         qnice_rom_os_addr_i     => qnice_dev_addr_i(13 downto 0),
+         qnice_rom_os_data_i     => qnice_dev_data_i(7 downto 0),
+         qnice_rom_os_data_o     => qnice_rom_os_data_o,
+         qnice_rom_basic_we_i    => qnice_rom_basic_we,
+         qnice_rom_basic_addr_i  => qnice_dev_addr_i(13 downto 0),
+         qnice_rom_basic_data_i  => qnice_dev_data_i(7 downto 0),
+         qnice_rom_basic_data_o  => qnice_rom_basic_data_o,
 
          clk_main_speed_i     => CORE_CLK_SPEED,
 
@@ -397,18 +414,19 @@ begin
    -- while in the 4:3 mode we are outputting a 5:4 image. This is kind of odd, but it seemed that our 4/3 aspect ratio
    -- adjusted image looks best on a 5:4 monitor and the other way round.
    -- Not sure if this will stay forever or if we will come up with a better naming convention.
-   qnice_video_mode_o <= C_VIDEO_SVGA_800_60   when qnice_osm_control_i(C_MENU_SVGA_800_60)    = '1' else
-                         C_VIDEO_HDMI_720_5994 when qnice_osm_control_i(C_MENU_HDMI_720_5994)  = '1' else
-                         C_VIDEO_HDMI_640_60   when qnice_osm_control_i(C_MENU_HDMI_640_60)    = '1' else
-                         C_VIDEO_HDMI_5_4_50   when qnice_osm_control_i(C_MENU_HDMI_5_4_50)    = '1' else
+   qnice_video_mode_o <= C_VIDEO_HDMI_5_4_50   when qnice_osm_control_i(C_MENU_HDMI_5_4_50)    = '1' else
                          C_VIDEO_HDMI_4_3_50   when qnice_osm_control_i(C_MENU_HDMI_4_3_50)    = '1' else
-                         C_VIDEO_HDMI_16_9_60  when qnice_osm_control_i(C_MENU_HDMI_16_9_60)   = '1' else
                          C_VIDEO_HDMI_16_9_50;
 
    -- Use On-Screen-Menu selections to configure several audio and video settings
    -- Video and audio mode control
    qnice_dvi_o                <= '0';                                         -- 0=HDMI (with sound), 1=DVI (no sound)
-   qnice_scandoubler_o        <= '0';                                         -- no scandoubler
+   -- CPC4MEGA65: activado (la plantilla trae '0' por defecto). Sin esto, VGA no muestra
+   -- nada: un monitor VGA no sincroniza con la senal nativa de 15kHz del CPC sin doblar
+   -- lineas primero (Video Pipeline wiki, S1.4/S4.2 - "scandoubler off" y "retro15kHz off"
+   -- a la vez no es ninguno de los 3 modos analogicos soportados). M1 exige HDMI Y VGA
+   -- funcionando (ver PORTING-PLAN.md), asi que esto es obligatorio, no opcional.
+   qnice_scandoubler_o        <= '1';
    qnice_audio_mute_o         <= '0';                                         -- audio is not muted
    qnice_audio_filter_o       <= qnice_osm_control_i(C_MENU_IMPROVE_AUDIO);   -- 0 = raw audio, 1 = use filters from globals.vhd
    qnice_zoom_crop_o          <= qnice_osm_control_i(C_MENU_HDMI_ZOOM);       -- 0 = no zoom/crop
@@ -451,20 +469,22 @@ begin
       qnice_dev_data_o     <= x"EEEE";
       qnice_dev_wait_o     <= '0';
 
-      -- Demo core specific: Delete before starting to port your core
-      qnice_demo_vd_ce     <= '0';
-      qnice_demo_vd_we     <= '0';
+      qnice_rom_os_we      <= '0';
+      qnice_rom_basic_we   <= '0';
 
       case qnice_dev_id_i is
 
-         -- Demo core specific stuff: delete before porting your own core
-         when C_DEV_DEMO_VD =>
-            qnice_demo_vd_ce     <= qnice_dev_ce_i;
-            qnice_demo_vd_we     <= qnice_dev_we_i;
-            qnice_dev_data_o     <= qnice_demo_vd_data_o;
+         -- CPC4MEGA65 M1A: las dos ROMs de arranque, cargadas por el Shell via CRTROM
+         -- (globals.vhd). Direccionamiento byte a byte simple (bus de 8 bits del Z80,
+         -- igual que la RAM plana del C64 - S72/S3.I.1 de la Porting Guide, sin reparto
+         -- par/impar en carriles como necesitan los cores de 16 bits).
+         when C_DEV_CPC_ROM_OS =>
+            qnice_rom_os_we      <= qnice_dev_we_i;
+            qnice_dev_data_o     <= x"00" & qnice_rom_os_data_o;
 
-         -- @TODO YOUR RAMs or ROMs (e.g. for cartridges) or other devices here
-         -- Device numbers need to be >= 0x0100
+         when C_DEV_CPC_ROM_BASIC =>
+            qnice_rom_basic_we   <= qnice_dev_we_i;
+            qnice_dev_data_o     <= x"00" & qnice_rom_basic_data_o;
 
          when others => null;
       end case;
@@ -474,26 +494,20 @@ begin
    -- Dual Clocks
    ---------------------------------------------------------------------------------------------
 
-   -- Put your dual-clock devices such as RAMs and ROMs here
-   --
-   -- Use the M2M framework's official RAM/ROM: dualport_2clk_ram
-   -- and make sure that the you configure the port that works with QNICE as a falling edge
-   -- by setting G_FALLING_A or G_FALLING_B (depending on which port you use) to true.
+   -- CPC4MEGA65: las dos ROMs de arranque (dualport_2clk_ram con puerto QNICE) viven dentro
+   -- de main.vhd en vez de aqui - mismo patron que el Kernal ROM de C64MEGA65
+   -- (CORE/vhdl/main.vhd, puertos qnice_c64rom_*), con las senales QNICE pasadas a traves
+   -- de la entidad main (ver i_main mas arriba y core_specific_devices).
 
    ---------------------------------------------------------------------------------------
    -- Virtual drive handler
    --
-   -- Only added for demo-purposes at this place, so that we can demonstrate the
-   -- firmware's ability to browse files and folders. It is very likely, that the
-   -- virtual drive handler needs to be placed somewhere else, for example inside
-   -- main.vhd. We advise to delete this before starting to port a core and re-adding
-   -- it later (and at the right place), if and when needed.
+   -- CPC4MEGA65: sin disquetera en M1 (C_VDNUM=0, globals.vhd) - la disquetera por imagen
+   -- .DSK/EDSK es Milestone 2. Se instancia igualmente con VDNUM=0 (patron soportado
+   -- genericamente por el framework) para no reintroducir este bloque desde cero en M2;
+   -- su lado QNICE no tiene ningun dispositivo real que lo alimente todavia.
    ---------------------------------------------------------------------------------------
 
-   -- @TODO:
-   -- a) In case that this is handled in main.vhd, you need to add the appropriate ports to i_main
-   -- b) You might want to change the drive led's color (just like the C64 core does) as long as
-   --    the cache is dirty (i.e. as long as the write process is not finished, yet)
    main_drive_led_o     <= '0';
    main_drive_led_col_o <= x"00FF00";  -- 24-bit RGB value for the led
 
@@ -538,9 +552,9 @@ begin
          -- qnice_addr is 28-bit because we have a 16-bit window selector and a 4k window: 65536*4096 = 268.435.456 = 2^28
          qnice_addr_i      => qnice_dev_addr_i,
          qnice_data_i      => qnice_dev_data_i,
-         qnice_data_o      => qnice_demo_vd_data_o,
-         qnice_ce_i        => qnice_demo_vd_ce,
-         qnice_we_i        => qnice_demo_vd_we
+         qnice_data_o      => open,
+         qnice_ce_i        => '0',
+         qnice_we_i        => '0'
       ); -- i_vdrives
 
 end architecture synthesis;

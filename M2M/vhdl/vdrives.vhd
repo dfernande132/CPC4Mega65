@@ -234,20 +234,27 @@ begin
    cache_dirty_o     <= cache_dirty_r_core;
    cache_flushing_o  <= cache_flushing_r_core;
 
-   i_cdc_q2m_img_mounted: xpm_cdc_array_single
-      generic map (
-         WIDTH => 3 * VDNUM
-      )
-      port map (
-         src_clk                                      => clk_qnice_i,
-         src_in((VDNUM * 1) - 1 downto (VDNUM * 0))   => img_mounted(VDNUM - 1 downto 0),
-         src_in((VDNUM * 2) - 1 downto (VDNUM * 1))   => cache_dirty_r_qnice(VDNUM - 1 downto 0),
-         src_in((VDNUM * 3) - 1 downto (VDNUM * 2))   => cache_flushing_r_qnice(VDNUM - 1 downto 0),
-         dest_clk                                     => clk_core_i,
-         dest_out((VDNUM * 1) - 1 downto (VDNUM * 0)) => img_mounted_out(VDNUM - 1 downto 0),
-         dest_out((VDNUM * 2) - 1 downto (VDNUM * 1)) => cache_dirty_r_core(VDNUM - 1 downto 0),
-         dest_out((VDNUM * 3) - 1 downto (VDNUM * 2)) => cache_flushing_r_core(VDNUM - 1 downto 0)
-      );
+   -- CPC4MEGA65 exception (ver core/doc/m2m/exceptions.md): con VDNUM=0 (sin disquetera
+   -- todavia, Milestone 2), WIDTH pasaba a ser 3*0=0, fuera del rango valido (1-1024) de
+   -- xpm_cdc_array_single ([XPM_CDC 5-4]). No hay nada que sincronizar cuando VDNUM=0 (las
+   -- señales de este bloque ya son de rango nulo en ese caso), asi que se salta la
+   -- instancia entera con un generate-if en vez de forzar un WIDTH minimo artificial.
+   gen_cdc_q2m_img_mounted: if VDNUM > 0 generate
+      i_cdc_q2m_img_mounted: xpm_cdc_array_single
+         generic map (
+            WIDTH => 3 * VDNUM
+         )
+         port map (
+            src_clk                                      => clk_qnice_i,
+            src_in((VDNUM * 1) - 1 downto (VDNUM * 0))   => img_mounted(VDNUM - 1 downto 0),
+            src_in((VDNUM * 2) - 1 downto (VDNUM * 1))   => cache_dirty_r_qnice(VDNUM - 1 downto 0),
+            src_in((VDNUM * 3) - 1 downto (VDNUM * 2))   => cache_flushing_r_qnice(VDNUM - 1 downto 0),
+            dest_clk                                     => clk_core_i,
+            dest_out((VDNUM * 1) - 1 downto (VDNUM * 0)) => img_mounted_out(VDNUM - 1 downto 0),
+            dest_out((VDNUM * 2) - 1 downto (VDNUM * 1)) => cache_dirty_r_core(VDNUM - 1 downto 0),
+            dest_out((VDNUM * 3) - 1 downto (VDNUM * 2)) => cache_flushing_r_core(VDNUM - 1 downto 0)
+         );
+   end generate gen_cdc_q2m_img_mounted;
 
    i_cdc_qnice2main: xpm_cdc_array_single
       generic map (
@@ -270,18 +277,39 @@ begin
    sd_buff_wr_o      <= sd_buff_wr;
    sd_ack_o          <= sd_ack;
 
-   i_cdc_main2qnice: xpm_cdc_array_single
-      generic map (
-         WIDTH => 1 + VDNUM
-      )
-      port map (
-         src_clk                             => clk_core_i,
-         src_in(0)                           => reset_core_i,
-         src_in((1 + VDNUM - 1) downto 1)    => drive_mounted_reg,
-         dest_clk                            => clk_qnice_i,
-         dest_out(0)                         => reset_qnice,
-         dest_out((1 + VDNUM - 1) downto 1)  => drive_mounted_reg_qnice
-      );
+   -- CPC4MEGA65 exception (ver core/doc/m2m/exceptions.md): con VDNUM=0, "src_in((1+VDNUM-1)
+   -- downto 1)" = "src_in(0 downto 1)" - un slice nulo, pero con el limite inferior (1) fuera
+   -- del rango real del vector (WIDTH=1+VDNUM=1, es decir "0 downto 0") - Vivado lo rechaza
+   -- como "array index 1 out of range" aunque el slice sea nulo. Partido en dos generate: el
+   -- caso VDNUM=0 (sin nada de drive_mounted que sincronizar) usa la instancia sin ese slice
+   -- en absoluto; el caso VDNUM>0 mantiene el codigo original tal cual.
+   gen_cdc_main2qnice_zero: if VDNUM = 0 generate
+      i_cdc_main2qnice: xpm_cdc_array_single
+         generic map (
+            WIDTH => 1
+         )
+         port map (
+            src_clk     => clk_core_i,
+            src_in(0)   => reset_core_i,
+            dest_clk    => clk_qnice_i,
+            dest_out(0) => reset_qnice
+         );
+   end generate gen_cdc_main2qnice_zero;
+
+   gen_cdc_main2qnice_nonzero: if VDNUM > 0 generate
+      i_cdc_main2qnice: xpm_cdc_array_single
+         generic map (
+            WIDTH => 1 + VDNUM
+         )
+         port map (
+            src_clk                             => clk_core_i,
+            src_in(0)                           => reset_core_i,
+            src_in((1 + VDNUM - 1) downto 1)    => drive_mounted_reg,
+            dest_clk                            => clk_qnice_i,
+            dest_out(0)                         => reset_qnice,
+            dest_out((1 + VDNUM - 1) downto 1)  => drive_mounted_reg_qnice
+         );
+   end generate gen_cdc_main2qnice_nonzero;
 
    -- speed up the QNICE firmware by doing certain calculations in hardware instead of software
    g_bytecalc : for i in 0 to VDNUM - 1 generate
@@ -386,7 +414,14 @@ begin
                   case qnice_addr_i(3 downto 0) is
                      -- img_mounted_o (drive 0 = lowest bit of std_logic_vector)
                      when x"0" =>
-                        img_mounted(VDNUM - 1 downto 0) <= qnice_data_i(VDNUM - 1 downto 0);
+                        -- CPC4MEGA65 exception (ver core/doc/m2m/exceptions.md): con VDNUM=0,
+                        -- "qnice_data_i(VDNUM-1 downto 0)" = "qnice_data_i(-1 downto 0)", un
+                        -- indice fuera del rango real de un vector de 16 bits, aunque el
+                        -- slice sea nulo - mismo problema que el de los xpm_cdc_array_single
+                        -- mas arriba. Nada que escribir cuando VDNUM=0 de todas formas.
+                        if VDNUM > 0 then
+                           img_mounted(VDNUM - 1 downto 0) <= qnice_data_i(VDNUM - 1 downto 0);
+                        end if;
 
                      -- img_readonly_o
                      when x"1" =>
@@ -502,7 +537,11 @@ begin
          case qnice_addr_i(3 downto 0) is
             -- img_mounted_o (drive 0 = lowest bit of std_logic_vector)
             when x"0" =>
-               qnice_data_o(VDNUM - 1 downto 0) <= img_mounted(VDNUM - 1 downto 0);
+               -- CPC4MEGA65 exception (ver core/doc/m2m/exceptions.md): mismo problema de
+               -- indice fuera de rango con slice nulo que en la escritura de arriba.
+               if VDNUM > 0 then
+                  qnice_data_o(VDNUM - 1 downto 0) <= img_mounted(VDNUM - 1 downto 0);
+               end if;
 
             -- img_readonly_o
             when x"1" =>
@@ -541,7 +580,11 @@ begin
                qnice_data_o(7 + BLKSZ) <= '1';
 
             when x"A" =>
-               qnice_data_o(VDNUM - 1 downto 0) <= drive_mounted_reg_qnice;
+               -- CPC4MEGA65 exception (ver core/doc/m2m/exceptions.md): mismo problema de
+               -- indice fuera de rango con slice nulo que en las dos escrituras de arriba.
+               if VDNUM > 0 then
+                  qnice_data_o(VDNUM - 1 downto 0) <= drive_mounted_reg_qnice;
+               end if;
 
             when others =>
                null;

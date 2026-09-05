@@ -1,9 +1,10 @@
 -------------------------------------------------------------------------------------------------------------
--- MiSTer2MEGA65 Framework  
+-- MiSTer2MEGA65 Framework
 --
 -- Clock Generator using the Xilinx specific MMCME2_ADV:
 --
---   @TODO YOURCORE expects 54 MHz
+--   CPC4MEGA65 expects 64 MHz (clk_sys del core original, ver rtl/pll/pll_0002.v -
+--   Altera PLL v17.0, 50MHz->64MHz - y globals.vhd/CORE_CLK_SPEED)
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 -------------------------------------------------------------------------------------------------------------
@@ -21,7 +22,7 @@ entity clk is
    port (
       sys_clk_i       : in  std_logic;   -- expects 100 MHz
 
-      main_clk_o      : out std_logic;   -- main's @TODO 54 MHz main clock
+      main_clk_o      : out std_logic;   -- main's 64 MHz main clock (CPC4MEGA65 clk_sys)
       main_rst_o      : out std_logic    -- main's reset, synchronized
    );
 end entity clk;
@@ -53,10 +54,13 @@ begin
          CLKIN1_PERIOD        => 10.0,       -- INPUT @ 100 MHz
          REF_JITTER1          => 0.010,
          DIVCLK_DIVIDE        => 1,
-         CLKFBOUT_MULT_F      => 6.750,      -- 675 MHz
+         -- CPC4MEGA65: 100MHz * 8.000 / 12.500 = 64MHz exacto (VCO=800MHz, dentro del
+         -- rango de la Artix-7 -2; CLKOUT_DIVIDE_F en pasos de 0.125, 12.500 es exacto).
+         -- Sin verificar aun en Vivado (WNS/timing real) - a confirmar en la primera build (M1B).
+         CLKFBOUT_MULT_F      => 8.000,      -- 800 MHz
          CLKFBOUT_PHASE       => 0.000,
          CLKFBOUT_USE_FINE_PS => FALSE,
-         CLKOUT0_DIVIDE_F     => 12.500,     -- 54 MHz
+         CLKOUT0_DIVIDE_F     => 12.500,     -- 64 MHz
          CLKOUT0_PHASE        => 0.000,
          CLKOUT0_DUTY_CYCLE   => 0.500,
          CLKOUT0_USE_FINE_PS  => FALSE

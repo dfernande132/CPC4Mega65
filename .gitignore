@@ -21,3 +21,15 @@ M2M/rom/*.lis
 M2M/rom/*.out
 M2M/rom/*.rom
 M2M/video_filters/*.out
+
+# CPC4MEGA65: logs de las ejecuciones de build_core.tcl (el .gitignore de la plantilla solo
+# cubre "vivado*.log/jou", y nosotros lanzamos Vivado con -log build_<algo>.log)
+CORE/build_*.log
+CORE/build_*.jou
+
+# CPC4MEGA65: el core MiSTer original es su propio repo git (clon de
+# MiSTer-devel/Amstrad_MiSTer) con nuestras modificaciones documentadas en
+# doc/m2m/exceptions.md - se commitea por separado dentro de esa carpeta.
+# Mientras el proyecto sea local no se engancha aqui como submodulo: cuando toque publicar,
+# se hara igual que en QL4M65 (fork propio + submodulo git de verdad).
+CORE/Amstrad_MiSTer/

@@ -40,8 +40,9 @@ constant QNICE_FIRMWARE           : string  := QNICE_FIRMWARE_M2M;
 -- then add all the clocks speeds here by adding more constants.
 ----------------------------------------------------------------------------------------------------------
 
--- @TODO: Your core's clock speed
-constant CORE_CLK_SPEED       : natural := 54_000_000;   -- @TODO YOURCORE expects 54 MHz
+-- CPC4MEGA65: clk_sys del core original es 64MHz (rtl/pll/pll_0002.v, wizard Altera PLL v17.0,
+-- referencia 50MHz -> 64MHz). Ver core/.research/PORTING-PLAN.md seccion 3.
+constant CORE_CLK_SPEED       : natural := 64_000_000;
 
 -- System clock speed (crystal that is driving the FPGA) and QNICE clock speed
 -- !!! Do not touch !!!
@@ -56,8 +57,36 @@ constant QNICE_CLK_SPEED      : natural := 50_000_000;   -- a change here has de
 --    VGA_*   size of the core's target output post scandoubler
 --    If in doubt, use twice the values found in this link:
 --    https://mister-devel.github.io/MkDocs_MiSTer/advanced/nativeres/#arcade-core-default-native-resolutions
+-- CPC4MEGA65: VGA_DX/VGA_DY son el LIENZO DEL OSM (rejilla de caracteres CHARS_DX x CHARS_DY
+-- que el firmware usa para menu/navegador/ayuda), NO el area activa de video que mide el
+-- framework. Un mismo global alimenta los DOS pipelines (analogico y digital), asi que no se
+-- puede "apuntar" al tamaño analogico sin romper el digital.
+--
+-- *** VGA_DX ESTA CLAVADO A 720 - NO SUBIRLO ***
+-- digital_pipeline.vhd:250 hace  hdmi_shift <= hdmi_video_mode.H_PIXELS - VGA_DX  y lo mete
+-- en video_overlay.vhd:28,  vga_cfg_shift_i : in natural.  Con VGA_DX=768 y el modo HDMI
+-- 576p (H_PIXELS=720) eso da -48 en un natural: violacion de rango, OSM de HDMI roto. AExp
+-- documenta exactamente esta trampa en su propio globals.vhd, y C64MEGA65 llega a 720 por el
+-- mismo sitio ("we need to go for 720x540 so that in the 5:4 and 4:3 modes everything looks
+-- correctly") aunque su lienzo analogico real sea 768x540.
+--
+-- Para referencia, el raster REAL de este core (derivado de rtl/crt_filter.v, bloque
+-- "blankgen", que es quien genera HBLANK/VBLANK porque usamos sync_filter='1'; sus contadores
+-- corren a CE_4 = phi_en_n = 4MHz):
+--   - Ancho activo = END_HBORDER(241) - BEGIN_HBORDER(49) = 192 ticks de 4MHz = 48us
+--                    -> a 16MHz de video_ce_o = 768 pixeles
+--   - Alto activo  = END_VBORDER(37*8+6=302) - BEGIN_VBORDER(4*8-2=30) = 272 lineas
+--   => nativo 768x272 (los 640x200 del modo 2 mas ~4 caracteres de borde por lado),
+--      lienzo analogico post-scandoubler 768x544.
+-- El desajuste entre ese 768 real y el 720 de aqui es el mismo que tiene AExp (su analogico
+-- real es ~754x574 y tambien deja VGA_DX en 720): la colocacion del OSM analogico se resuelve
+-- en el camino analogico, no tocando esta constante.
+--
+-- VGA_DY si se ajusta al alto real del lienzo analogico (272*2=544), igual que hace C64MEGA65
+-- con su 540 en vez del 576 de la plantilla: no hay ningun "shift" vertical equivalente en el
+-- pipeline digital, asi que aqui no aplica la restriccion de arriba. 544/16 = 34 filas exactas.
 constant VGA_DX               : natural := 720;
-constant VGA_DY               : natural := 576;
+constant VGA_DY               : natural := 544;
 
 --    FONT_*  size of one OSM character
 constant FONT_FILE            : string  := "../font/Anikki-16x16-m2m.rom";
@@ -81,25 +110,11 @@ constant C_HMAP_DEMO          : std_logic_vector(15 downto 0) := x"0200";     --
 -- Virtual Drive Management System
 ----------------------------------------------------------------------------------------------------------
 
--- example virtual drive handler, which is connected to nothing and only here to demo
--- the file- and directory browsing capabilities of the firmware
-constant C_DEV_DEMO_VD        : std_logic_vector(15 downto 0) := x"0101";
-constant C_DEV_DEMO_NOBUFFER  : std_logic_vector(15 downto 0) := x"AAAA";
-
--- Virtual drive management system (handled by vdrives.vhd and the firmware)
--- If you are not using virtual drives, make sure that:
---    C_VDNUM        is 0
---    C_VD_DEVICE    is x"EEEE"
---    C_VD_BUFFER    is (x"EEEE", x"EEEE")
--- Otherwise make sure that you wire C_VD_DEVICE in the qnice_ramrom_devices process and that you
--- have as many appropriately sized RAM buffers for disk images as you have drives
+-- CPC4MEGA65: sin disquetera todavia (Milestone 2) -> sin vdrives en M1.
 type vd_buf_array is array(natural range <>) of std_logic_vector;
-constant C_VDNUM              : natural := 3;                                          -- amount of virtual drives; maximum is 15
-constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := C_DEV_DEMO_VD;        -- device number of vdrives.vhd device
-constant C_VD_BUFFER          : vd_buf_array := (  C_DEV_DEMO_NOBUFFER,
-                                                   C_DEV_DEMO_NOBUFFER,
-                                                   C_DEV_DEMO_NOBUFFER,
-                                                   x"EEEE");                           -- Always finish the array using x"EEEE"
+constant C_VDNUM              : natural := 0;
+constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := x"EEEE";
+constant C_VD_BUFFER          : vd_buf_array := (x"EEEE", x"EEEE");
 
 ----------------------------------------------------------------------------------------------------------
 -- System for handling simulated cartridges and ROM loaders
@@ -119,43 +134,32 @@ constant C_CRTROMTYPE_MANDATORY  : std_logic_vector(15 downto 0) := x"0003";
 constant C_CRTROMTYPE_OPTIONAL   : std_logic_vector(15 downto 0) := x"0004";
 
 
--- Manually loadable ROMs and cartridges as defined in config.vhd
--- If you are not using this, then make sure that:
---    C_CRTROM_MAN_NUM    is 0
---    C_CRTROMS_MAN       is (x"EEEE", x"EEEE", x"EEEE")
--- Each entry of the array consists of two constants:
---    1) Type of CRT or ROM: Load to a QNICE device, load into HyperRAM, load into SDRAM
---    2) If (1) = QNICE device, then this is the device ID
---       else it is a 4k window in HyperRAM or in SDRAM
--- In case we are loading to a QNICE device, then the control and status register is located at the 4k window 0xFFFF.
--- @TODO: See @TODO for more details about the control and status register
-constant C_CRTROMS_MAN_NUM       : natural := 0;                                       -- amount of manually loadable ROMs and carts; maximum is 16
-constant C_CRTROMS_MAN           : crtrom_buf_array := ( x"EEEE", x"EEEE",
-                                                         x"EEEE");                     -- Always finish the array using x"EEEE"
+-- CPC4MEGA65: sin cargas manuales de ROM/cartucho en M1 (Dandanator es backlog).
+constant C_CRTROMS_MAN_NUM       : natural := 0;
+constant C_CRTROMS_MAN           : crtrom_buf_array := (x"EEEE", x"EEEE", x"EEEE");
 
--- Automatically loaded ROMs: These ROMs are loaded before the core starts
---
--- Works similar to manually loadable ROMs and cartridges and each line item has two additional parameters:
---    1) and 2) see above
---    3) Mandatory or optional ROM
---    4) Start address of ROM file name within C_CRTROM_AUTO_NAMES
--- If you are not using this, then make sure that:
---    C_CRTROMS_AUTO_NUM  is 0
---    C_CRTROMS_AUTO      is (x"EEEE", x"EEEE", x"EEEE", x"EEEE", x"EEEE")
--- How to pass the filenames of the ROMs to the framework:
---    C_CRTROMS_AUTO_NAMES is a concatenation of all filenames (see config.vhd's WHS_DATA for an example of how to concatenate)
---    The start addresses of the filename can be determined similarly to how it is done in config.vhd's HELP_x_START
---    using a concatenated addition and VHDL's string length operator.
---    IMPORTANT: a) The framework is not doing any consistency or error check when it comes to C_CRTROMS_AUTO_NAMES, so you
---                  need to be extra careful that the string itself plus the start position of the namex are correct.
---               b) Don't forget to zero-terminate each of your substrings of C_CRTROMS_AUTO_NAMES by adding "& ENDSTR;"
---               c) Don't forget to finish the C_CRTROMS_AUTO array with x"EEEE"
+-- CPC4MEGA65: device IDs para los bloques de ROM (ver core/.research/PORTING-PLAN.md
+-- seccion 4.2). Las direcciones QNICE de dispositivo empiezan en 0x0100 (0x0000-0x00FF
+-- estan reservadas al framework).
+constant C_DEV_CPC_ROM_OS        : std_logic_vector(15 downto 0) := x"0100";  -- ROM baja (firmware/OS), 16KB
+constant C_DEV_CPC_ROM_BASIC     : std_logic_vector(15 downto 0) := x"0101";  -- ROM alta banco 0 (BASIC), 16KB
 
--- M2M framework constants
-constant C_CRTROMS_AUTO_NUM      : natural := 0;                                       -- Amount of automatically loadable ROMs and carts, maximum is 16
-constant C_CRTROMS_AUTO_NAMES    : string  := "" & ENDSTR;
-constant C_CRTROMS_AUTO          : crtrom_buf_array := ( x"EEEE", x"EEEE", x"EEEE", x"EEEE",
-                                                         x"EEEE");                     -- Always finish the array using x"EEEE"
+-- ROMs cargadas automaticamente por el Shell antes de arrancar el core.
+-- @TODO: nombres de fichero provisionales (ver PORTING-PLAN.md seccion 8, decision
+-- pendiente de que imagenes de ROM concretas usar) - confirmar antes de la primera build.
+-- Ambas son C_CRTROMTYPE_MANDATORY: sin firmware el CPC no arranca, igual que kick.rom
+-- en el port de Amiga.
+constant CPC_ROM_OS              : string := "/cpc4mega65/os6128.rom" & ENDSTR;
+constant CPC_ROM_BASIC           : string := "/cpc4mega65/basic6128.rom" & ENDSTR;
+constant CPC_ROM_BASIC_START     : std_logic_vector(15 downto 0) :=
+   std_logic_vector(to_unsigned(CPC_ROM_OS'length, 16));
+
+constant C_CRTROMS_AUTO_NUM      : natural := 2;
+constant C_CRTROMS_AUTO_NAMES    : string  := CPC_ROM_OS & CPC_ROM_BASIC;
+constant C_CRTROMS_AUTO          : crtrom_buf_array := (
+   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_OS,    C_CRTROMTYPE_MANDATORY, x"0000",
+   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_BASIC, C_CRTROMTYPE_MANDATORY, CPC_ROM_BASIC_START,
+   x"EEEE");
 
 ----------------------------------------------------------------------------------------------------------
 -- Audio filters
