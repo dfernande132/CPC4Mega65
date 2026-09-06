@@ -200,6 +200,13 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PPRDIR/Amstrad_MiSTer/rtl/u765/u765.sv">
+        <FileInfo>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/Amstrad_MiSTer/rtl/GA40010/video.sv">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>

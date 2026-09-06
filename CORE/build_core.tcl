@@ -25,7 +25,6 @@ set ga_dir        "$core_cpc_dir/rtl/GA40010"
 # posteriores, no referenciados por Amstrad_motherboard.v de todas formas):
 #   rtl/sdram.v        - sustituido por las BRAM de main.vhd (M1A)
 #   rtl/hid.sv         - submodulo de teclado quitado, ver doc/m2m/exceptions.md
-#   rtl/u765/*         - disquetera, Milestone 2
 #   rtl/tzxplayer.vhd  - cinta, Milestone 5
 #   rtl/dandanator/*, rtl/playcity/*, rtl/*mouse*.v, rtl/joydb.sv, rtl/progressbar.v - backlog
 #   Amstrad.sv, Amstrad.sdc - el top-level "emu" original no se usa (main.vhd es el nuevo top)
@@ -101,6 +100,14 @@ set_property file_type SystemVerilog [get_files "$core_cpc_dir/rtl/Amstrad_MMU.v
 # pegado si no se revierte aquí a propósito.
 set_property file_type Verilog [get_files "$core_cpc_dir/rtl/Amstrad_motherboard.v"]
 
+# CPC4MEGA65 (M2): controlador de disquete uPD765. Ya venia declarado como SYSTEMVERILOG_FILE
+# en files.qip del core original, asi que aqui solo se replica ese tipo. Los ficheros vecinos
+# u765_test.sv (banco de pruebas) y u765_tb.cpp (Verilator) no entran: son de simulacion.
+add_files -norecurse -fileset sources_1 [list \
+    "$core_cpc_dir/rtl/u765/u765.sv" \
+]
+set_property file_type SystemVerilog [get_files "$core_cpc_dir/rtl/u765/u765.sv"]
+
 # CPC4MEGA65: si el log de sintesis da mas casos de [Synth 8-10632]/[Synth 8-1873]/
 # [Synth 8-2671] (construcciones SystemVerilog en un fichero marcado como Verilog puro) en
 # algun otro fichero - la correccion es marcar ESE fichero concreto como SystemVerilog
@@ -128,6 +135,23 @@ set impl_status [get_property STATUS [get_runs impl_1]]
 puts "IMPL_STATUS=$impl_status"
 if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
     puts "RESULT=IMPL_FAILED"
+    close_project
+    exit 1
+}
+
+# CPC4MEGA65 (M2): comprobacion de timing.
+#
+# Hasta aqui el script solo miraba que impl_1 llegase al 100%, y eso NO significa que el
+# diseno cumpla timing: Vivado escribe el bitstream igualmente aunque haya slack negativo.
+# La primera build de M2 salio con "RESULT=BUILD_OK" y WNS = -4.98 ns / 8 endpoints fallando
+# - un .cor que habria fallado de forma erratica en hardware. Es exactamente la leccion
+# "M1004" del port del QL: no fiarse de un build "exitoso" sin mirar el WNS.
+open_run impl_1 -name impl_1
+set wns [get_property SLACK [get_timing_paths -delay_type max -max_paths 1 -nworst 1]]
+set whs [get_property SLACK [get_timing_paths -delay_type min -max_paths 1 -nworst 1]]
+puts "TIMING: WNS=$wns ns  WHS=$whs ns"
+if {$wns < 0 || $whs < 0} {
+    puts "RESULT=TIMING_FAILED"
     close_project
     exit 1
 }

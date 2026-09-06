@@ -333,6 +333,13 @@ PlayCity, snapshots, joystick, ratón. Modelo fijo CPC6128, RAM fija 128k.
 confirmar guardado persistente tras recargar. Buffers de `u765.sv` ya son
 Vivado-clean; el trabajo es el puente `u765`↔`vdrives.vhd`.
 
+**CUMPLIDO en hardware real con M2001 (2026-09-06)**: juego cargado desde
+`.DSK`, CP/M arrancado, y guardado persistente confirmado tras recargar.
+Ver `DECISIONES.md` y la sección 9 de este documento para el diseño y las
+tres builds que costó el timing de los cruces de dominio. Lo que no estaba
+en el criterio y se añadió después a petición del usuario (M2002): LED de
+disquetera rojo/azul y zumbido del motor, portados de QL4M65.
+
 ### Milestone 3 — Joystick
 
 **Criterio**: un juego que use joystick responde correctamente desde un
@@ -488,6 +495,208 @@ C64MEGA65 ni AExp tienen porque corren una copia más antigua del framework) en
 - El teclado (tabla extraída de `hid.sv`, nunca simulada) sigue sin probarse en hardware.
 - Vale la pena reportar aguas arriba el bug de `vdrives.vhd`/`VDNUM=0` en algún momento
   (ver `exceptions.md`) - no hecho todavía, sin GitHub por ahora.
+
+## 9. M2A: diseño de la disquetera `.DSK` (2026-09-06)
+
+Estudio previo a escribir RTL, con el mismo criterio que funcionó en M1: entender la frontera
+antes de tocarla. La pregunta central de M2 es **de qué dominio de reloj es cada mitad del
+`u765`**, porque la Porting Guide (Parte III §3.I.3) marca ahí una trampa explícita:
+
+> «**TRAP:** en MiSTer estos puertos van con "clk_sys", lo que *parece* dominio del core; en
+> M2M corren con el reloj de QNICE, y `vdrives` hace el CDC internamente. Cablea el lado SD de
+> tu modelo de disquetera al reloj de QNICE exactamente como hace el `iec_drive` del C64.»
+
+### 9.1 Reparto de dominios en `vdrives.vhd` (leído, no supuesto)
+
+`vdrives.vhd:126-175` separa sus puertos con comentarios de sección:
+
+| Lado | Señales | Notas |
+|---|---|---|
+| **Dominio core** | `img_mounted_o`, `img_readonly_o`, `img_size_o`, `img_type_o`, `drive_mounted_o`, `cache_dirty_o`, `cache_flushing_o` | ya vienen con CDC hecho dentro (`xpm_cdc_array_single`, `vdrives.vhd:242-272`) |
+| **Dominio QNICE** | `sd_lba_i`, `sd_blk_cnt_i`, `sd_rd_i`, `sd_wr_i`, `sd_ack_o`, `sd_buff_addr_o`, `sd_buff_dout_o`, `sd_buff_din_i`, `sd_buff_wr_o` | sin CDC: es responsabilidad nuestra |
+
+`AW=13`/`DW=7` (`vdrives.vhd:103-104`) → `sd_buff_addr_o` es de 14 bits. El `u765` pide 9. Con
+`BLKSZ=2` (512 B, el tamaño natural del sector de un `.DSK`) y `sd_blk_cnt` = 0 —el `u765` ni
+siquiera tiene puerto `sd_blk_cnt`, así que siempre pide **un** bloque— el firmware solo usa
+las direcciones 0..511, luego `sd_buff_addr_o(8 downto 0)` es exacto, no un recorte optimista.
+
+### 9.2 El `u765` NO tiene la separación de relojes que sí tenían QL4M65 y C64MEGA65
+
+Este es el hallazgo que diferencia M2 del trabajo equivalente en los cores hermanos:
+
+- **QL4M65** reutilizó `sd_card.sv`, que ya nace con dos relojes independientes (`clk_sys` para
+  el lado bloque, `clk_spi` para el bit-shifting SPI) y con su buffer `sdbuf` ya declarado como
+  RAM dual-port de doble reloj (`clock0`/`clock1`, `sd_card.sv:88-96`). Su propio documento de
+  diseño lo dice con todas las letras: *«No new CDC bridge needed — reuse as-is»*
+  (`learning_cores/QL4M65/.research/qlsd-design.md:98`).
+- **C64MEGA65** reutilizó `iec_drive`, que también nace con dos relojes: `clk` (core) y
+  `clk_sys` = *«"SD card" clock for writing to the drives' internal data buffers»*
+  (`learning_cores/C64MEGA65/CORE/vhdl/main.vhd:1323`), alimentado desde `c64_clk_sd_i`.
+- **`u765.sv` tiene un solo reloj**: `module u765 (input clk_sys, input ce, ...)` (`u765.sv:32-58`).
+  No hay segundo reloj que cablear. **Aquí sí hay que crear la separación.**
+
+### 9.3 Anatomía interna del `u765`: por qué la separación resulta ser barata
+
+Leyendo el módulo entero, sus bloques secuenciales se reparten así:
+
+| Bloque | Línea | ¿`ce`? | Qué toca |
+|---|---|---|---|
+| `fdc` | 289 | sí (`if (ce)`) | toda la máquina de estados del controlador, bus del Z80, puerto **B** de los buffers |
+| `sdcontrol` | 232 | **no** | `sd_lba`/`sd_rd`/`sd_wr`, sincronizador de `sd_ack`, `sd_buff_type` |
+| `image_track_offsets` | 210 | no | RAM de offsets de pista, puro dominio core |
+| `tinfo_ram` / `sector_ram` | 173/188 | — | puerto **A** = lado SD (`sd_buff_*`), puerto **B** = lado FDC |
+
+El handshake `fdc`↔`sdcontrol` es un protocolo de **niveles mantenidos hasta acuse**, no de
+pulsos: `fdc` pone `sd_rd_sector[ds0] <= 1` y no lo baja hasta ver `sd_busy_sector`
+(`u765.sv:1143-1151`); `sdcontrol` levanta `sd_rd` y no lo baja hasta el flanco de `sd_ack`
+(`u765.sv:235-238`). El giro completo dura toda una transferencia de bloque —microsegundos—,
+así que ese handshake **no necesita CDC si ambos bloques se quedan en el mismo dominio**.
+
+La consecuencia práctica: **no hace falta mover `sdcontrol` ni tocar la máquina de estados**.
+Lo único que *obliga* a cambiar de dominio es el **bombeo de bytes**, porque el firmware QNICE
+pone `sd_buff_addr` y lee `sd_buff_din` de forma combinacional en el mismo acceso — un
+ida-y-vuelta que no se puede sincronizar sin handshake por byte. Y eso se resuelve exactamente
+igual que en `sd_card.sv`: **haciendo el buffer de doble reloj**.
+
+### 9.4 Diseño elegido (opción mínima, calcada de los dos precedentes probados)
+
+1. **`u765_dpram` pasa a doble reloj** (`u765.sv:1471-1506`): `clock` → `clock_a`/`clock_b`.
+   Es una RAM dual-port inferida de libro; Vivado infiere BRAM verdadera con relojes
+   independientes sin problema. Cambio de 3 líneas.
+2. **`u765` recibe un puerto nuevo `input clk_sd`**, usado *solo* por el puerto A de los dos
+   buffers. `clk_sys` sigue siendo el reloj del core en todo lo demás.
+3. Los tres controles de dominio core que llegan al puerto A (`sd_buff_type`, `tinfo_ds0`,
+   `tinfo_hds`) **salen del `u765` por un puerto nuevo `sd_sel_o` y vuelven ya sincronizados
+   por `sd_sel_sd_i`**. El cruce lo hace `main.vhd`, no el `u765`.
+4. **`sd_ack` se pre-sincroniza en `main.vhd`** con `xpm_cdc_single` antes de entrar al `u765`.
+5. **Camino core→QNICE (`sd_lba`, `sd_rd`, `sd_wr`, `sd_sel`)**: un `xpm_cdc_array_single` de
+   39 bits en `main.vhd`. En AExp/QL4M65 estas señales cruzan sin sincronizar (se generan en el
+   bloque `clk_spi` de `sd_card.sv` y entran directas a `vdrives`), y funciona porque son
+   niveles mantenidos miles de ciclos que el firmware *sondea*. `sd_lba` se fija en el **mismo**
+   ciclo que `sd_rd` (`u765.sv:246-250`), luego el desfase entre bits sincronizados es como
+   mucho 1 ciclo — y el firmware lee `sd_lba` decenas de ciclos después de detectar `sd_rd=1`.
+
+### 9.4bis. Por qué TODO el CDC acabó en `main.vhd` y nada dentro del `u765` (M2001, medido)
+
+La primera versión hacía lo evidente: sincronizadores de 2 FF escritos a mano dentro de
+`u765.sv`, y dejando que la cadena de 6 etapas que ya tenía el `u765` (`ack <= {ack[4:0],
+sd_ack}`) absorbiera el `sd_ack` entrante. **Vivado dio `WNS = -4.982 ns` con 8 endpoints
+fallando, y las cuatro violaciones grandes eran exactamente esos cuatro cruces**:
+
+| Slack | Camino |
+|---|---|
+| −4.982 ns | `i_vdrives/sd_ack_reg[1]` (qnice) → `i_u765/ack_reg[3]_srl4_srlopt` (main) |
+| −3.617 ns | `i_u765/sd_buff_type_reg` (main) → `i_u765/sd_sel_meta_reg[2]` (qnice) |
+| −2.130 ns | `i_u765/tinfo_ds0_reg` (main) → `i_u765/sd_sel_meta_reg[1]` (qnice) |
+| −1.683 ns | `i_u765/tinfo_hds_reg` (main) → `i_u765/sd_sel_meta_reg[0]` (qnice) |
+
+La causa raíz: **un sincronizador escrito en RTL plano no lleva restricción asociada**, así que
+el analizador trata el cruce como un camino síncrono y exige cumplir una relación de fase entre
+`main_clk` (64 MHz) y `qnice_clk` (50 MHz) que sencillamente no existe (`Requirement: 0.625ns`).
+Y hay algo peor que el número: la cadena `ack` se sintetizó como **SRL** (`ack_reg[3]_srl4_srlopt`
+— un desplazador en LUT, no FFs adyacentes), que no es un filtro de metaestabilidad válido en
+absoluto. Es decir, el diseño no solo *reportaba* mal, es que *estaba* mal.
+
+**El único cruce que no apareció en la lista fue el que ya usaba `xpm_cdc_array_single`**,
+porque los macros XPM traen sus propias restricciones (`set_max_delay -datapath_only` sobre la
+primera etapa). De ahí la regla que sigue este port: todo cruce core↔QNICE del FDC va en
+`main.vhd` como macro XPM, y `u765.sv` se queda con cero lógica de CDC y cero código específico
+de Xilinx (gana dos puertos, que es una excepción mucho más limpia y sigue siendo portable a
+Quartus).
+
+**Efecto colateral en el proceso**: `build_core.tcl` había dado `RESULT=BUILD_OK` sobre ese
+diseño, porque solo comprobaba que `impl_1` llegara al 100% — y Vivado escribe el bitstream
+igualmente con slack negativo. Se ha añadido una comprobación explícita de WNS/WHS que ahora
+devuelve `RESULT=TIMING_FAILED`. Es la lección `M1004` del QL, reaprendida por las malas.
+
+### 9.4ter. `sd_ack` no era un cruce, eran dos consumidores (M2001, segunda medida)
+
+El arreglo de 9.4bis dejó `WNS = -3.116 ns`, y la nueva compuerta de timing lo cazó
+(`RESULT=TIMING_FAILED`) en vez de entregar un `.cor` malo. Las tres violaciones restantes
+tenían todas el mismo origen — `i_cdc_sd_ack/syncstages_ff_reg[3]` (main_clk) — y destinos
+`i_u765/sector_ram/ram_reg/ENBWREN` y `/WEBWE[*]` (qnice_clk).
+
+Error de razonamiento, no de sintaxis: **`sd_ack` tiene dos consumidores en dos dominios**, y
+yo lo sincronicé entero hacia uno solo.
+
+| Consumidor | Dónde vive | Qué versión necesita |
+|---|---|---|
+| `wren_a` de `tinfo_ram`/`sector_ram` | puerto A, relojado por `clk_sd` (QNICE) | la nativa, **sin** sincronizar |
+| cadena `ack` de `sdcontrol` | `clk_sys` (core) | la sincronizada al core |
+
+Al pasar el único puerto `sd_ack` a la versión de dominio core, la habilitación de escritura de
+una BRAM relojada por QNICE quedó gobernada por un registro de `main_clk`: un cruce nuevo, y
+encima hacia un pin de control de BRAM, que es de lo peor que se puede dejar sin restringir.
+
+**Arreglo**: `u765` recibe dos puertos, `sd_ack` (dominio QNICE, directo desde `vdrives`) y
+`sd_ack_sys` (dominio core, vía `xpm_cdc_single`). En MiSTer esta distinción no existía porque
+todo el módulo iba con un solo reloj — es justo el tipo de detalle que aparece solo al partir
+un módulo en dos dominios.
+
+**Regla general que sale de aquí**: al hacer dual-clock un módulo de un solo reloj, no basta
+con preguntarse "¿de qué dominio es esta señal?", hay que preguntarse **"¿quiénes la consumen y
+de qué dominio es cada uno?"**. Una señal con dos consumidores en dos dominios necesita dos
+versiones, no una elección entre ellas.
+
+**Descartado — opción "puente CDC completo dejando el `u765` intacto"**: obligaría a cruzar
+`sd_buff_addr`→`sd_buff_din` en ida y vuelta (~150 ns) en un camino que el firmware espera
+combinacional. Frágil y contrario al patrón del framework.
+
+**Descartado — opción "todo el `u765` en dominio QNICE"**: convertiría el bus del Z80
+(`nRD`/`nWR`/`a0`/`din`/`dout`) en un CDC, que es justo lo que no se debe cruzar, y además
+descolocaría el `ce` de 8 MHz del que depende la temporización de byte del disquete
+(`CYCLES*32/1000` → 32 µs/byte, `u765.sv:399`).
+
+### 9.5 Pegamento de bus que hay que escribir en `main.vhd`
+
+`main.vhd` instancia `Amstrad_motherboard` directamente, no `Amstrad.sv`, así que el decodificado
+del FDC —que vive en `Amstrad.sv:732-778`— hay que replicarlo nosotros. Es corto y está leído:
+
+```
+fdc_sel  = {cpu_addr[10], cpu_addr[8], cpu_addr[7], cpu_addr[0]}
+io_rd    = rd & iorq                    -- Amstrad.sv:959
+io_wr    = wr & iorq                    -- Amstrad.sv:960
+u765_sel = (fdc_sel[3:1] == 3'b010)     -- status[17] era "desactivar FDC" del OSD: se fija a 0
+motor    <= cpu_dout[0]  en flanco de io_wr con fdc_sel[3:1]==0
+ready[i] <= |img_size    en img_mounted[i]
+```
+
+El `cpu_din` del core original es un AND cableado (`ram_dout & mf2_dout & fdc_dout & ...`,
+`Amstrad.sv:955`) donde cada periférico devuelve `8'hFF` si no está seleccionado. Nuestro
+`mb_cpu_din` actual es una cadena de multiplexores con `x"FF"` por defecto; el FDC entra como
+una rama más, con prioridad sobre RAM/ROM cuando `u765_sel & io_rd`.
+
+`ce_u765` = 8 MHz = `clk_main`/8 (en el original, `!div[2:0]` sobre 64 MHz, `Amstrad.sv:127`).
+Nuestro `clk_main` ya es 64 MHz exactos, así que el divisor es idéntico al del core original.
+
+### 9.6 Cambios de configuración del framework
+
+- `globals.vhd`: `C_VDNUM := 2` (las dos unidades A:/B: que el `u765` soporta),
+  `C_VD_DEVICE`, y `C_VD_BUFFER` con un ID de dispositivo por unidad.
+- `main.vhd`: instanciar `vdrives` con `VDNUM => 2`, `BLKSZ => 2`, siguiendo el ejemplo
+  completo de C64MEGA65 (`main.vhd:1537-1586`); añadir el reloj QNICE como puerto de entrada
+  (`clk_sd_i`, patrón `c64_clk_sd_i`) y bajar el bus MMIO de QNICE.
+- `mega65.vhd`: enrutar `C_VD_DEVICE` en `core_specific_devices` y crear una RAM de buffer por
+  unidad bajo su `C_VD_BUFFER`.
+- `config.vhd`: entradas de menú `OPTM_G_MOUNT_DRV` para A: y B: (recordatorio: en M1 el
+  framework abortó con *«More menu items have OPTM_G_MOUNT_DRV than C_VDNUM»* justo por tener
+  esas entradas sin drives; ahora es al revés y hay que reponerlas).
+- **La excepción de `vdrives.vhd` para `VDNUM=0` deja de ejercitarse** al pasar a `VDNUM=2`.
+  Se mantiene el código y su documentación en `exceptions.md` —el bug de framework sigue
+  siendo real y hay que reportarlo aguas arriba— pero deja de estar en nuestro camino crítico.
+
+### 9.7 Riesgos abiertos (a verificar en hardware, no resueltos en papel)
+
+1. **Colisión de puerto en la BRAM de doble reloj**: puerto A escribe mientras B lee. En la
+   práctica el FDC espera a que termine la transferencia, pero Vivado avisará; hay que decidir
+   el `WRITE_MODE` y confirmar que el aviso es benigno, no taparlo.
+2. **`.DSK` vs EDSK**: el `u765` distingue por la primera letra de la cabecera (`"E"` = EDSK,
+   `"M"` = DSK estándar, `u765.sv:424-427`). La biblioteca de prueba del usuario
+   (`E:\CPC4MEGA65\DSK`, 26 imágenes) tiene tamaños entre 185 KB y 261 KB, o sea que hay de
+   los dos tipos — buena cobertura desde el primer test.
+3. **Escritura y caché**: el criterio de éxito de M2 incluye *guardado persistente*, que pasa
+   por `cache_dirty_o`/`cache_flushing_o` y el retardo de flush de `vdrives`. Es la parte que
+   ningún test de solo-lectura cubre.
 
 ## 8. Decisiones pendientes
 

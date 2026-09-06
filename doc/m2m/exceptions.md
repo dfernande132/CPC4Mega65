@@ -2,9 +2,8 @@ How to update CPC4MEGA65
 =========================
 
 The following changes have been made to the original MiSTer-devel/Amstrad_MiSTer
-core. As soon as you update `CORE/Amstrad_MiSTer/`, make sure you re-apply the changes
-described here. No shared MiSTer2MEGA65 framework file (`M2M/`) has been modified for
-this milestone - only this one MiSTer core file.
+core, and to the shared MiSTer2MEGA65 framework (`M2M/`). As soon as you update
+`CORE/Amstrad_MiSTer/` or the framework, make sure you re-apply the changes described here.
 
 MiSTer core Amstrad_MiSTer
 --------------------------
@@ -79,6 +78,96 @@ unnamed and Vivado flags it again - check first whether the file can simply be m
 SystemVerilog (cheaper), and only fall back to naming the block if a keyword collision like
 `do` blocks that.
 
+### `rtl/u765/u765.sv`: made the two internal sector/track buffers dual-clock (Milestone 2, 2026-09-06)
+
+**Why**: in MiSTer, `u765` is a single-clock module - `clk_sys` drives both the FDC state
+machine and the SD-card side. In M2M that split is not optional: the Porting Guide (Part III
+section 3.I.3) states that `vdrives.vhd`'s `sd_lba`/`sd_rd`/`sd_wr`/`sd_ack`/`sd_buff_*` ports
+run in the **QNICE clock domain**, not the core's, and it points at C64MEGA65's `iec_drive` as
+the reference - a module that is dual-clock by design (`clk` = core, `clk_sys` = *"SD card
+clock for writing to the drives' internal data buffers"*). QL4M65 reused MiSTer's `sd_card.sv`,
+which has the same split built in (`clk_sys`/`clk_spi` plus an `altsyncram` buffer with
+separate `clock0`/`clock1`). `u765` has no such second clock, so it had to be created.
+
+**What changed** (three small edits, no state machine touched):
+
+* `u765_dpram`: its single `clock` port became `clock_a` (SD side) and `clock_b` (FDC side).
+  It was already a textbook inferred true-dual-port RAM, so Vivado infers a genuine
+  dual-clock BRAM from it unchanged otherwise.
+* `u765`: new top-level input `clk_sd`, wired **only** to `clock_a` of `tinfo_ram` and
+  `sector_ram`. Everything else still runs on `clk_sys`.
+* Three core-domain signals select where a port-A write lands (`sd_buff_type`, `tinfo_ds0`,
+  `tinfo_hds`). Rather than synchronize them inside this file, they are exported as
+  `sd_sel_o[2:0]` and come back already synchronized as `sd_sel_sd_i[2:0]`; the crossing
+  itself is an `xpm_cdc_array_single` in `CORE/vhdl/main.vhd`. **This split is not stylistic
+  and it is not optional** - see the note below.
+* `sd_ack` became **two** ports, `sd_ack` and `sd_ack_sys`, because it has two consumers in
+  two different domains - something that simply did not exist in MiSTer, where the whole
+  module ran on one clock. `sd_ack` (QNICE domain, used as-is with no synchronizer) gates the
+  write enable of the buffers' port A, which is clocked by `clk_sd`. `sd_ack_sys` (core
+  domain, pre-synchronized outside by an `xpm_cdc_single`) feeds `sdcontrol`'s `ack` shift
+  register. Feeding port A from the core-synchronized copy instead creates a *new* crossing
+  into a QNICE-clocked BRAM's `ENBWREN` - a mistake this port actually made and measured
+  (`WNS = -3.116 ns` on exactly that path, second M2 build).
+
+**Why no synchronizer logic lives inside this file.** The first M2 build did it the obvious
+way: plain 2-FF synchronizers written in RTL right here, plus letting `u765`'s existing
+6-stage `ack <= {ack[4:0], sd_ack}` chain absorb the incoming `sd_ack`. Vivado reported
+`WNS = -4.982 ns` with 8 failing endpoints, and the four large violations were *exactly* those
+four hand-written crossings. A synchronizer written as ordinary RTL carries no timing
+exception with it, so the analyzer treats the crossing as a synchronous path and demands a
+phase relationship between `main_clk` (64 MHz) and `qnice_clk` (50 MHz) that does not exist.
+Worse, the `ack` shift register was synthesized as an **SRL** (a LUT-based shift register, not
+adjacent flip-flops), which is not a valid metastability filter at all. The one crossing that
+did *not* appear in the violation list was the one already using `xpm_cdc_array_single` - the
+XPM macros ship their own `set_max_delay -datapath_only` constraints. So every core/QNICE
+crossing of the FDC now lives in `main.vhd` as an XPM macro, and this file keeps zero CDC
+logic and zero Xilinx-specific code (it gains two ports instead, which stays portable).
+
+**What deliberately did NOT change**: the `sdcontrol` block stays in the core clock domain.
+Its handshake with the `fdc` block is a *level held until acknowledged* protocol with
+turnarounds measured in microseconds (`u765.sv` around lines 1143-1151 and 235-238), so
+leaving both blocks in the same domain means no CDC is needed there at all. The only thing
+that genuinely forces a domain change is the byte pump, because the QNICE firmware sets
+`sd_buff_addr` and reads `sd_buff_din` combinationally in the same access - a round trip that
+cannot be synchronized without a per-byte handshake. Making the buffer dual-clock removes that
+round trip entirely, which is exactly what `sd_card.sv` does. `sd_ack` is now pre-synchronized
+into the core domain by an `xpm_cdc_single` in `main.vhd`, so the existing 6-stage `ack` chain
+becomes a plain same-domain edge filter, which is all it was ever good for.
+
+Full reasoning, including the two designs that were considered and rejected, is in
+`core/.research/PORTING-PLAN.md` section 9.
+
+When updating from a newer upstream `u765.sv`: re-apply the same three edits. If upstream ever
+gains its own second clock for the SD side, drop this exception and use theirs instead.
+
+Also note that `main.vhd` re-implements the FDC bus glue that lives in the original top-level
+`Amstrad.sv` (address decode `fdc_sel`, `io_rd`/`io_wr`, the motor latch and the `ready`
+flags, `Amstrad.sv:732-780` and `959-960`), because this port instantiates
+`Amstrad_motherboard` directly and never uses `Amstrad.sv`. That is new code on our side, not
+a modification of a MiSTer file, but it needs re-checking against upstream in the same way.
+
+### `rtl/crt_filter.v`: NOT modified - an analog-framing change was tried and reverted (2026-09-06)
+
+Recorded here so nobody re-derives it. `blankgen`'s line raster is genuinely lopsided: with
+`hborder` counting at `CE_4` (4 MHz, one tick = 0.25 us) over a 256-tick / 64 us line, the split
+is 4.00 us of HSYNC pulse + **8.25 us** of back porch + 48.00 us of active + **3.75 us** of
+front porch. Real PAL uses about 5.7 us of back porch, so 8.25 is long and it does push the
+picture rightwards.
+
+`BEGIN_HBORDER`/`END_HBORDER` were briefly changed to 40/232 (splitting the 48 non-active ticks
+evenly, 6.00 us each side, keeping exactly the same 192 active ticks so no pixel is lost) to
+chase a report of the VGA image sitting right with its right edge off the panel. **Reverted**:
+the user then observed the *stock MEGA65 core* misframing the same way on the same monitor, which
+isolates the cause to the monitor's handling of a non-VESA 50 Hz mode, not to this core. The
+change fixed nothing observable, and a modification to a vendored third-party file has to earn
+its keep - every one of them is debt to re-apply on the next upstream update.
+
+Keep in mind if analog framing ever matters again (a different monitor, the R3 build): the
+measurement above still stands, the change is two constants, and it does **not** affect HDMI
+(ascal scales whatever `HBLANK`/`VBLANK` delimit, and that region keeps its size - only *when*
+it happens inside the line changes).
+
 MiSTer2MEGA65
 -------------
 
@@ -116,6 +205,12 @@ isn't a case of them handling the edge case correctly, they simply never had the
 has the bug. CPC4MEGA65 is (as far as this project has checked) the first of the four to
 build against the current upstream `vdrives.vhd`, hence the first to hit it. Worth reporting
 upstream at some point (not done yet, this is local-only per the user's "no GitHub yet" rule).
+
+**Status since Milestone 2 (2026-09-06)**: with `C_VDNUM := 2` this guard is no longer
+exercised - the `VDNUM=0` path it protects is now dead code in this project. It is kept
+deliberately: the upstream bug is real and still unreported, and dropping the guard would
+mean re-discovering it if the core ever goes back to `VDNUM=0` (or if another port copies
+this framework tree). It is simply no longer on our critical path.
 
 When updating from a newer upstream `vdrives.vhd`: re-check whether this has been fixed
 upstream (search for `3 * VDNUM` near an `xpm_cdc_array_single` generic map); if the fix is

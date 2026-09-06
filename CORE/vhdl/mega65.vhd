@@ -14,6 +14,7 @@ library work;
 use work.globals.all;
 use work.types_pkg.all;
 use work.video_modes_pkg.all;
+use work.vdrives_pkg.all;   -- CPC4MEGA65 M2: vd_vec_array/vd_std_array y AW/DW
 
 library xpm;
 use xpm.vcomponents.all;
@@ -245,12 +246,14 @@ signal main_rst               : std_logic;
 -- CPC4MEGA65 (M1B006): solo modos de 50Hz (maquina PAL), y ademas ninguno con H_PIXELS < 720,
 -- porque hdmi_shift = H_PIXELS - VGA_DX se mete en un 'natural' y se iria a negativo - ver el
 -- comentario largo en config.vhd/OPTM_ITEMS.
-constant C_MENU_HDMI_16_9_50   : natural := 5;
-constant C_MENU_HDMI_4_3_50    : natural := 6;
-constant C_MENU_HDMI_5_4_50    : natural := 7;
-constant C_MENU_CRT_EMULATION  : natural := 11;
-constant C_MENU_HDMI_ZOOM      : natural := 12;
-constant C_MENU_IMPROVE_AUDIO  : natural := 13;
+-- CPC4MEGA65 (M2): +3 respecto a M1B006, por las tres lineas nuevas (Drive A:, Drive B: y
+-- separador) al principio de OPTM_ITEMS. Justo el reajuste manual del que avisa la wiki.
+constant C_MENU_HDMI_16_9_50   : natural := 8;
+constant C_MENU_HDMI_4_3_50    : natural := 9;
+constant C_MENU_HDMI_5_4_50    : natural := 10;
+constant C_MENU_CRT_EMULATION  : natural := 14;
+constant C_MENU_HDMI_ZOOM      : natural := 15;
+constant C_MENU_IMPROVE_AUDIO  : natural := 16;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -260,6 +263,56 @@ signal qnice_rom_os_we        : std_logic;
 signal qnice_rom_os_data_o    : std_logic_vector(7 downto 0);
 signal qnice_rom_basic_we     : std_logic;
 signal qnice_rom_basic_data_o : std_logic_vector(7 downto 0);
+-- CPC4MEGA65 M2: AMSDOS (ROM alta banco 7) - sin ella no hay comandos de disco en el CPC
+signal qnice_rom_amsdos_we     : std_logic;
+signal qnice_rom_amsdos_data_o : std_logic_vector(7 downto 0);
+
+---------------------------------------------------------------------------------------------
+-- CPC4MEGA65 M2: disquetera .DSK/EDSK (vdrives + buffers de imagen + lado SD del u765)
+---------------------------------------------------------------------------------------------
+
+-- Buffers de imagen de disco: RAM solo-QNICE, una por unidad. El firmware carga la imagen
+-- entera aqui al montarla y luego sirve los bloques que pide el u765 desde RAM, en vez de ir
+-- a la SD en tiempo real (vdrives.vhd:69-71 lo pide explicitamente por rendimiento).
+signal qnice_mount_a_we       : std_logic;
+signal qnice_mount_a_data     : std_logic_vector(7 downto 0);
+signal qnice_mount_b_we       : std_logic;
+signal qnice_mount_b_data     : std_logic_vector(7 downto 0);
+
+-- Bus QNICE del propio vdrives
+signal qnice_vd_ce            : std_logic;
+signal qnice_vd_we            : std_logic;
+signal qnice_vd_data          : std_logic_vector(15 downto 0);
+
+-- Lado "SD config" de vdrives -> main.vhd (dominio del core; vdrives ya hace el CDC)
+signal main_img_mounted       : std_logic_vector(C_VDNUM - 1 downto 0);
+signal main_img_readonly      : std_logic;
+signal main_img_size          : std_logic_vector(31 downto 0);
+signal main_drive_mounted     : std_logic_vector(C_VDNUM - 1 downto 0);
+signal main_cache_dirty       : std_logic_vector(C_VDNUM - 1 downto 0);
+signal main_cache_flushing    : std_logic_vector(C_VDNUM - 1 downto 0);
+signal main_cache_busy        : std_logic;   -- cualquier unidad con datos sin volcar a la SD
+
+-- CPC4MEGA65 M2 (M2002): "la disquetera esta girando", desde main.vhd (latch del motor del
+-- CPC). Dominio del core, un solo nivel: para un LED de placa no hace falta CDC.
+signal main_drive_active      : std_logic;
+
+-- Lado "SD block/byte" main.vhd <-> vdrives (dominio de QNICE)
+signal qnice_sd_lba           : std_logic_vector(31 downto 0);
+signal qnice_sd_rd            : std_logic_vector(C_VDNUM - 1 downto 0);
+signal qnice_sd_wr            : std_logic_vector(C_VDNUM - 1 downto 0);
+signal qnice_sd_ack           : vd_std_array(C_VDNUM - 1 downto 0);
+signal qnice_sd_buff_addr     : std_logic_vector(AW downto 0);
+signal qnice_sd_buff_dout     : std_logic_vector(DW downto 0);
+signal qnice_sd_buff_din      : std_logic_vector(7 downto 0);
+signal qnice_sd_buff_wr       : std_logic;
+
+-- Adaptadores a los tipos de array de vdrives_pkg (un elemento por unidad)
+signal qnice_sd_lba_arr       : vd_vec_array(C_VDNUM - 1 downto 0)(31 downto 0);
+signal qnice_sd_blk_cnt_arr   : vd_vec_array(C_VDNUM - 1 downto 0)(5 downto 0);
+signal qnice_sd_rd_arr        : vd_std_array(C_VDNUM - 1 downto 0);
+signal qnice_sd_wr_arr        : vd_std_array(C_VDNUM - 1 downto 0);
+signal qnice_sd_buff_din_arr  : vd_vec_array(C_VDNUM - 1 downto 0)(DW downto 0);
 
 begin
 
@@ -361,6 +414,30 @@ begin
          qnice_rom_basic_addr_i  => qnice_dev_addr_i(13 downto 0),
          qnice_rom_basic_data_i  => qnice_dev_data_i(7 downto 0),
          qnice_rom_basic_data_o  => qnice_rom_basic_data_o,
+         qnice_rom_amsdos_we_i   => qnice_rom_amsdos_we,
+         qnice_rom_amsdos_addr_i => qnice_dev_addr_i(13 downto 0),
+         qnice_rom_amsdos_data_i => qnice_dev_data_i(7 downto 0),
+         qnice_rom_amsdos_data_o => qnice_rom_amsdos_data_o,
+
+         -- CPC4MEGA65 M2: disquetera. Ojo al reparto de dominios (ver main.vhd y
+         -- PORTING-PLAN.md 9.1): main_img_* son de dominio core, qnice_sd_* de dominio QNICE.
+         main_img_mounted_i      => main_img_mounted,
+         main_img_readonly_i     => main_img_readonly,
+         main_img_size_i         => main_img_size,
+         qnice_sd_lba_o          => qnice_sd_lba,
+         qnice_sd_rd_o           => qnice_sd_rd,
+         qnice_sd_wr_o           => qnice_sd_wr,
+         -- El u765 tiene una sola entrada de ack para las dos unidades (Amstrad.sv:776 hace
+         -- exactamente esto: sd_ack(|sd_ack)), porque solo hay una transferencia en vuelo.
+         qnice_sd_ack_i          => qnice_sd_ack(0) or qnice_sd_ack(1),
+         -- Con BLKSZ=2 (bloques de 512B) y sd_blk_cnt=0, el firmware solo usa las direcciones
+         -- 0..511 del bus de 14 bits de vdrives: los 9 bits bajos son la direccion completa,
+         -- no un recorte. Ver PORTING-PLAN.md 9.1.
+         qnice_sd_buff_addr_i    => qnice_sd_buff_addr(8 downto 0),
+         qnice_sd_buff_dout_i    => qnice_sd_buff_dout,
+         qnice_sd_buff_din_o     => qnice_sd_buff_din,
+         qnice_sd_buff_wr_i      => qnice_sd_buff_wr,
+         main_drive_active_o     => main_drive_active,
 
          clk_main_speed_i     => CORE_CLK_SPEED,
 
@@ -471,6 +548,12 @@ begin
 
       qnice_rom_os_we      <= '0';
       qnice_rom_basic_we   <= '0';
+      qnice_rom_amsdos_we  <= '0';
+
+      qnice_vd_ce          <= '0';
+      qnice_vd_we          <= '0';
+      qnice_mount_a_we     <= '0';
+      qnice_mount_b_we     <= '0';
 
       case qnice_dev_id_i is
 
@@ -486,6 +569,26 @@ begin
             qnice_rom_basic_we   <= qnice_dev_we_i;
             qnice_dev_data_o     <= x"00" & qnice_rom_basic_data_o;
 
+         -- CPC4MEGA65 M2: AMSDOS (ROM alta banco 7)
+         when C_DEV_CPC_ROM_AMSDOS =>
+            qnice_rom_amsdos_we  <= qnice_dev_we_i;
+            qnice_dev_data_o     <= x"00" & qnice_rom_amsdos_data_o;
+
+         -- CPC4MEGA65 M2: sistema de unidades virtuales (registros de vdrives.vhd)
+         when C_VD_DEVICE =>
+            qnice_vd_ce          <= qnice_dev_ce_i;
+            qnice_vd_we          <= qnice_dev_we_i;
+            qnice_dev_data_o     <= qnice_vd_data;
+
+         -- CPC4MEGA65 M2: buffers de imagen de disco, uno por unidad
+         when C_DEV_CPC_MOUNT_A =>
+            qnice_mount_a_we     <= qnice_dev_we_i;
+            qnice_dev_data_o     <= x"00" & qnice_mount_a_data;
+
+         when C_DEV_CPC_MOUNT_B =>
+            qnice_mount_b_we     <= qnice_dev_we_i;
+            qnice_dev_data_o     <= x"00" & qnice_mount_b_data;
+
          when others => null;
       end case;
    end process core_specific_devices;
@@ -500,20 +603,92 @@ begin
    -- de la entidad main (ver i_main mas arriba y core_specific_devices).
 
    ---------------------------------------------------------------------------------------
-   -- Virtual drive handler
+   -- CPC4MEGA65 M2: buffers de imagen de disco (RAM solo-QNICE, una por unidad)
    --
-   -- CPC4MEGA65: sin disquetera en M1 (C_VDNUM=0, globals.vhd) - la disquetera por imagen
-   -- .DSK/EDSK es Milestone 2. Se instancia igualmente con VDNUM=0 (patron soportado
-   -- genericamente por el framework) para no reintroducir este bloque desde cero en M2;
-   -- su lado QNICE no tiene ningun dispositivo real que lo alimente todavia.
+   -- Tamano: 256KB por unidad. Cubre cualquier disco de una cara del CPC, incluidos los de 42
+   -- pistas y los EDSK con sectores no estandar: el formato DATA tipico son 194.816 bytes
+   -- (40 pistas x 9 sectores x 512 + cabeceras) y el mayor de la biblioteca de pruebas es de
+   -- 261.120. LIMITE CONOCIDO: una imagen de DOS CARAS (~390KB o mas) no cabe; si hace falta,
+   -- habra que llevar estos buffers a HyperRAM en vez de BRAM. Coste: ~57 tiles RAMB36 por
+   -- unidad; M1B006 usaba 97 de 365, asi que las dos caben con holgura (~58% del total).
    ---------------------------------------------------------------------------------------
 
-   main_drive_led_o     <= '0';
-   main_drive_led_col_o <= x"00FF00";  -- 24-bit RGB value for the led
+   i_mount_buf_a : entity work.dualport_2clk_ram
+      generic map (
+         ADDR_WIDTH        => 18,           -- 256KB
+         DATA_WIDTH        => 8,
+         FALLING_A         => true          -- contrato de flanco de QNICE (Porting Guide S73)
+      )
+      port map (
+         -- solo QNICE
+         clock_a           => qnice_clk_i,
+         address_a         => qnice_dev_addr_i(17 downto 0),
+         data_a            => qnice_dev_data_i(7 downto 0),
+         wren_a            => qnice_mount_a_we,
+         q_a               => qnice_mount_a_data
+      ); -- i_mount_buf_a
+
+   i_mount_buf_b : entity work.dualport_2clk_ram
+      generic map (
+         ADDR_WIDTH        => 18,
+         DATA_WIDTH        => 8,
+         FALLING_A         => true
+      )
+      port map (
+         clock_a           => qnice_clk_i,
+         address_a         => qnice_dev_addr_i(17 downto 0),
+         data_a            => qnice_dev_data_i(7 downto 0),
+         wren_a            => qnice_mount_b_we,
+         q_a               => qnice_mount_b_data
+      ); -- i_mount_buf_b
+
+   ---------------------------------------------------------------------------------------
+   -- Virtual drive handler
+   --
+   -- CPC4MEGA65 M2: dos unidades (A: y B:), las que modela el u765 dentro de main.vhd.
+   -- BLKSZ=2 (bloques de 512 bytes) = el tamano de sector natural de un .DSK del CPC y lo
+   -- que el propio u765 asume (su sd_buff_addr es de 9 bits, y no tiene puerto sd_blk_cnt,
+   -- o sea que siempre pide exactamente un bloque).
+   ---------------------------------------------------------------------------------------
+
+   -- CPC4MEGA65 M2 (M2002): LED de disquetera, mismo criterio que QL4M65
+   -- (learning_cores/QL4M65/CORE/vhdl/mega65.vhd:1184-1185).
+   --
+   -- ROJO = la disquetera esta en marcha. La senal es el latch del motor que llega de main.vhd,
+   -- que es literalmente lo que enciende el LED en un CPC real, y cubre A: y B: a la vez porque
+   -- comparten motor igual que en la maquina original. Ojo al comportamiento autentico: AMSDOS
+   -- apaga el motor con unos segundos de retardo, asi que el LED se queda encendido un rato
+   -- despues de acabar el acceso - eso es lo que hace un CPC de verdad, no un fallo.
+   --
+   -- AZUL = hay datos escritos que todavia no se han volcado a la SD ("no apagues aun"). El
+   -- color no es arbitrario: el QL usa azul para esto mismo, asi que el usuario ya tiene el
+   -- codigo aprendido de su otro core. (C64MEGA65 usa ambar y AExp amarillo para lo mismo; lo
+   -- que importa es que sea distinto del rojo de actividad.)
+   --
+   -- En reposo el LED se apaga. Antes se quedaba verde fijo con solo tener un disco montado,
+   -- que no aportaba informacion: montado es el estado normal, no un aviso.
+   main_cache_busy      <= '1' when (main_cache_dirty    /= (main_cache_dirty'range    => '0') or
+                                     main_cache_flushing /= (main_cache_flushing'range => '0'))
+                           else '0';
+
+   main_drive_led_o     <= main_drive_active or main_cache_busy;
+   main_drive_led_col_o <= x"0000FF" when main_cache_busy = '1' else x"FF0000";
+
+   -- Adaptadores a los tipos de array de vdrives_pkg. sd_lba y sd_buff_din se replican a las
+   -- dos unidades porque el u765 solo tiene un juego (Amstrad.sv:193/199 hace lo mismo con
+   -- '{sd_lba,sd_lba} y '{sd_buff_din,sd_buff_din}): quien selecciona la unidad es sd_rd/sd_wr.
+   gen_vd_fanout : for i in 0 to C_VDNUM - 1 generate
+      qnice_sd_lba_arr(i)      <= qnice_sd_lba;
+      qnice_sd_blk_cnt_arr(i)  <= (others => '0');   -- 0 = "un bloque" (vdrives suma 1)
+      qnice_sd_rd_arr(i)       <= qnice_sd_rd(i);
+      qnice_sd_wr_arr(i)       <= qnice_sd_wr(i);
+      qnice_sd_buff_din_arr(i) <= qnice_sd_buff_din;
+   end generate gen_vd_fanout;
 
    i_vdrives : entity work.vdrives
       generic map (
-         VDNUM       => C_VDNUM
+         VDNUM       => C_VDNUM,
+         BLKSZ       => 2                   -- 2 = bloques de 512 bytes
       )
       port map
       (
@@ -522,39 +697,39 @@ begin
          reset_core_i      => main_reset_core_i,
 
          -- Core clock domain
-         img_mounted_o     => open,
-         img_readonly_o    => open,
-         img_size_o        => open,
-         img_type_o        => open,
-         drive_mounted_o   => open,
+         img_mounted_o     => main_img_mounted,
+         img_readonly_o    => main_img_readonly,
+         img_size_o        => main_img_size,
+         img_type_o        => open,             -- el u765 no distingue tipos de imagen
+         drive_mounted_o   => main_drive_mounted,
 
          -- Cache output signals: The dirty flags can be used to enforce data consistency
          -- (for example by ignoring/delaying a reset or delaying a drive unmount/mount, etc.)
          -- The flushing flags can be used to signal the fact that the caches are currently
          -- flushing to the user, for example using a special color/signal for example
          -- at the drive led
-         cache_dirty_o     => open,
-         cache_flushing_o  => open,
+         cache_dirty_o     => main_cache_dirty,
+         cache_flushing_o  => main_cache_flushing,
 
          -- QNICE clock domain
-         sd_lba_i          => (others => (others => '0')),
-         sd_blk_cnt_i      => (others => (others => '0')),
-         sd_rd_i           => (others => '0'),
-         sd_wr_i           => (others => '0'),
-         sd_ack_o          => open,
+         sd_lba_i          => qnice_sd_lba_arr,
+         sd_blk_cnt_i      => qnice_sd_blk_cnt_arr,
+         sd_rd_i           => qnice_sd_rd_arr,
+         sd_wr_i           => qnice_sd_wr_arr,
+         sd_ack_o          => qnice_sd_ack,
 
-         sd_buff_addr_o    => open,
-         sd_buff_dout_o    => open,
-         sd_buff_din_i     => (others => (others => '0')),
-         sd_buff_wr_o      => open,
+         sd_buff_addr_o    => qnice_sd_buff_addr,
+         sd_buff_dout_o    => qnice_sd_buff_dout,
+         sd_buff_din_i     => qnice_sd_buff_din_arr,
+         sd_buff_wr_o      => qnice_sd_buff_wr,
 
          -- QNICE interface (MMIO, 4k-segmented)
          -- qnice_addr is 28-bit because we have a 16-bit window selector and a 4k window: 65536*4096 = 268.435.456 = 2^28
          qnice_addr_i      => qnice_dev_addr_i,
          qnice_data_i      => qnice_dev_data_i,
-         qnice_data_o      => open,
-         qnice_ce_i        => '0',
-         qnice_we_i        => '0'
+         qnice_data_o      => qnice_vd_data,
+         qnice_ce_i        => qnice_vd_ce,
+         qnice_we_i        => qnice_vd_we
       ); -- i_vdrives
 
 end architecture synthesis;

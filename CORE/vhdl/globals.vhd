@@ -107,14 +107,35 @@ constant C_HMAP_M2M           : std_logic_vector(15 downto 0) := x"0000";     --
 constant C_HMAP_DEMO          : std_logic_vector(15 downto 0) := x"0200";     -- Start address reserved for core
 
 ----------------------------------------------------------------------------------------------------------
+-- CPC4MEGA65: device IDs de QNICE especificos del core
+--
+-- Ver core/.research/PORTING-PLAN.md secciones 4.2 (ROMs) y 9.6 (disquetera). Las direcciones
+-- de dispositivo empiezan en 0x0100 porque 0x0000-0x00FF estan reservadas al framework.
+-- Este bloque va ANTES de la seccion de vdrives a proposito: C_VD_DEVICE y C_VD_BUFFER se
+-- construyen con estos nombres, y ademas mega65.vhd los usa como etiquetas de un "case", lo
+-- que en VHDL exige constantes con nombre (un elemento indexado de C_VD_BUFFER no vale).
+----------------------------------------------------------------------------------------------------------
+
+constant C_DEV_CPC_ROM_OS        : std_logic_vector(15 downto 0) := x"0100";  -- ROM baja (firmware/OS), 16KB
+constant C_DEV_CPC_ROM_BASIC     : std_logic_vector(15 downto 0) := x"0101";  -- ROM alta banco 0 (BASIC), 16KB
+constant C_DEV_CPC_ROM_AMSDOS    : std_logic_vector(15 downto 0) := x"0105";  -- ROM alta banco 7 (AMSDOS), 16KB
+constant C_DEV_CPC_VDRIVES       : std_logic_vector(15 downto 0) := x"0102";  -- vdrives.vhd (gestion de unidades)
+constant C_DEV_CPC_MOUNT_A       : std_logic_vector(15 downto 0) := x"0103";  -- buffer de imagen de la unidad A:
+constant C_DEV_CPC_MOUNT_B       : std_logic_vector(15 downto 0) := x"0104";  -- buffer de imagen de la unidad B:
+
+----------------------------------------------------------------------------------------------------------
 -- Virtual Drive Management System
 ----------------------------------------------------------------------------------------------------------
 
--- CPC4MEGA65: sin disquetera todavia (Milestone 2) -> sin vdrives en M1.
+-- CPC4MEGA65 M2: dos unidades de disquete, las mismas dos que modela rtl/u765/u765.sv
+-- (sus puertos ready/motor/sd_rd/sd_wr son de 2 bits: unidad 0 = A:, unidad 1 = B:).
+-- main.vhd lleva un assert que falla si esto deja de ser 2.
 type vd_buf_array is array(natural range <>) of std_logic_vector;
-constant C_VDNUM              : natural := 0;
-constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := x"EEEE";
-constant C_VD_BUFFER          : vd_buf_array := (x"EEEE", x"EEEE");
+constant C_VDNUM              : natural := 2;
+constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := C_DEV_CPC_VDRIVES;
+constant C_VD_BUFFER          : vd_buf_array := (  C_DEV_CPC_MOUNT_A,
+                                                   C_DEV_CPC_MOUNT_B,
+                                                   x"EEEE");   -- terminar siempre con x"EEEE"
 
 ----------------------------------------------------------------------------------------------------------
 -- System for handling simulated cartridges and ROM loaders
@@ -138,27 +159,38 @@ constant C_CRTROMTYPE_OPTIONAL   : std_logic_vector(15 downto 0) := x"0004";
 constant C_CRTROMS_MAN_NUM       : natural := 0;
 constant C_CRTROMS_MAN           : crtrom_buf_array := (x"EEEE", x"EEEE", x"EEEE");
 
--- CPC4MEGA65: device IDs para los bloques de ROM (ver core/.research/PORTING-PLAN.md
--- seccion 4.2). Las direcciones QNICE de dispositivo empiezan en 0x0100 (0x0000-0x00FF
--- estan reservadas al framework).
-constant C_DEV_CPC_ROM_OS        : std_logic_vector(15 downto 0) := x"0100";  -- ROM baja (firmware/OS), 16KB
-constant C_DEV_CPC_ROM_BASIC     : std_logic_vector(15 downto 0) := x"0101";  -- ROM alta banco 0 (BASIC), 16KB
+-- CPC4MEGA65 M2: los device IDs (C_DEV_CPC_*) se declaran mas arriba, antes de la seccion de
+-- vdrives, porque C_VD_DEVICE/C_VD_BUFFER los necesitan.
 
 -- ROMs cargadas automaticamente por el Shell antes de arrancar el core.
--- @TODO: nombres de fichero provisionales (ver PORTING-PLAN.md seccion 8, decision
--- pendiente de que imagenes de ROM concretas usar) - confirmar antes de la primera build.
--- Ambas son C_CRTROMTYPE_MANDATORY: sin firmware el CPC no arranca, igual que kick.rom
+-- Las tres son C_CRTROMTYPE_MANDATORY: sin firmware el CPC no arranca, igual que kick.rom
 -- en el port de Amiga.
+--
+-- CPC4MEGA65 M2: se anade AMSDOS. No es opcional para este milestone: los comandos de disco
+-- del CPC (|A, |B, |CPM, CAT, RUN"...", LOAD/SAVE a disco) NO viven ni en el OS ni en el
+-- BASIC - son RSX que aporta la ROM de AMSDOS, que en el CPC6128 real va integrada como
+-- ROM ALTA banco 7. Confirmado en el propio core original: Amstrad.sv:341-344 mapea
+-- "0,4 -> 9'h000 (OS) / 1,5 -> 9'h100 (BASIC) / 2,6 -> 9'h107 (AMSDOS)", donde el 9'h107 es
+-- ram_A[22]=1 (zona de ROM alta) con ROMbank = 7.
+--
+-- Se declara MANDATORY, no OPTIONAL, a proposito: si faltara el fichero, rom_map[7] seguiria
+-- a 1 y el banco 7 devolveria ceros - el escaneo de ROMs del firmware del CPC leeria un byte
+-- de tipo de ROM invalido y el fallo seria raro y dificil de diagnosticar. Con MANDATORY el
+-- Shell dice claramente que fichero falta.
 constant CPC_ROM_OS              : string := "/cpc4mega65/os6128.rom" & ENDSTR;
 constant CPC_ROM_BASIC           : string := "/cpc4mega65/basic6128.rom" & ENDSTR;
+constant CPC_ROM_AMSDOS          : string := "/cpc4mega65/amsdos.rom" & ENDSTR;
 constant CPC_ROM_BASIC_START     : std_logic_vector(15 downto 0) :=
    std_logic_vector(to_unsigned(CPC_ROM_OS'length, 16));
+constant CPC_ROM_AMSDOS_START    : std_logic_vector(15 downto 0) :=
+   std_logic_vector(to_unsigned(CPC_ROM_OS'length + CPC_ROM_BASIC'length, 16));
 
-constant C_CRTROMS_AUTO_NUM      : natural := 2;
-constant C_CRTROMS_AUTO_NAMES    : string  := CPC_ROM_OS & CPC_ROM_BASIC;
+constant C_CRTROMS_AUTO_NUM      : natural := 3;
+constant C_CRTROMS_AUTO_NAMES    : string  := CPC_ROM_OS & CPC_ROM_BASIC & CPC_ROM_AMSDOS;
 constant C_CRTROMS_AUTO          : crtrom_buf_array := (
-   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_OS,    C_CRTROMTYPE_MANDATORY, x"0000",
-   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_BASIC, C_CRTROMTYPE_MANDATORY, CPC_ROM_BASIC_START,
+   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_OS,     C_CRTROMTYPE_MANDATORY, x"0000",
+   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_BASIC,  C_CRTROMTYPE_MANDATORY, CPC_ROM_BASIC_START,
+   C_CRTROMTYPE_DEVICE, C_DEV_CPC_ROM_AMSDOS, C_CRTROMTYPE_MANDATORY, CPC_ROM_AMSDOS_START,
    x"EEEE");
 
 ----------------------------------------------------------------------------------------------------------

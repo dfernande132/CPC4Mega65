@@ -80,7 +80,30 @@ SUBMENU_SUMMARY XOR     R8, R8                  ; R8 = 0 = no custom string
 ;  R10: @TODO: Future release: Context (see CTX_* in sysdef.asm)
 ; Output:
 ;   R8: 0=do not filter file, i.e. show file
-FILTER_FILES    XOR     R8, R8                  ; R8 = 0 = do not filter file
+;
+; CPC4MEGA65 (M2): al montar una imagen de disco solo se muestran los .DSK, para que el
+; navegador no ensucie la lista con las .ROM y la configuracion que viven en el mismo
+; directorio /cpc4mega65. El nombre llega ya en mayusculas, asi que se compara con ".DSK".
+; Los EDSK usan la misma extension .dsk (lo que cambia es la cabecera del fichero, "E" en vez
+; de "M", que distingue el propio u765 - u765.sv:424-427), asi que un solo filtro cubre los dos
+; formatos. En cualquier otro contexto no se filtra nada.
+FILTER_FILES    INCRB
+
+                CMP     1, R9                   ; los directorios no se filtran nunca
+                RBRA    _FFILES_SHOW, Z
+
+                CMP     CTX_MOUNT_DISKIMG, R10  ; contexto: montar imagen de disco?
+                RBRA    _FFILES_SHOW, !Z        ; no: no filtrar
+
+                MOVE    CPC_IMGFILE_DSK, R9
+                RSUB    M2M$CHK_EXT, 1
+                RBRA    _FFILES_SHOW, C         ; es un .DSK: mostrarlo
+
+                MOVE    1, R8                   ; no lo es: ocultarlo
+                RBRA    _FFILES_RET, 1
+
+_FFILES_SHOW    XOR     R8, R8                  ; R8 = 0 = do not filter file
+_FFILES_RET     DECRB
                 RET
 
 ; PREP_LOAD_IMAGE callback function:
@@ -184,6 +207,10 @@ CUSTOM_MSG      XOR     R8, R8
 ; ----------------------------------------------------------------------------
 
 ; Add your core specific constants and strings here
+
+; CPC4MEGA65 (M2): extension de imagen de disco, usada por FILTER_FILES. Vale tanto para DSK
+; estandar como para EDSK: los dos usan .dsk y se distinguen por la cabecera del fichero.
+CPC_IMGFILE_DSK .ASCII_W ".DSK"
 
 ; This needs to be the last thing before the "Variables" sections starts
 END_OF_ROM      .DW 0
