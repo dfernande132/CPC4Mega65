@@ -17,8 +17,8 @@
 --     de los de la fila principal) no tienen equivalente directo en el MEGA65 - sin mapear.
 --   - los simbolos [ ] \ y las F-teclas F0/F2/F4/F6/F8 del keypad del CPC tampoco tienen
 --     tecla MEGA65 dedicada - sin mapear (perdida menor, no bloquea arrancar ni escribir).
---   - la superposicion de joystick-como-teclado (filas Y=6/Y=9 en hid.sv) se deja fuera
---     hasta Milestone 3 (joystick).
+--   - la superposicion de joystick-como-teclado (filas Y=6/Y=9 en hid.sv) llega en Milestone 3,
+--     ver la seccion "Joystick" mas abajo.
 --
 -- MiSTer2MEGA65 done by sy2002 and MJoergen in 2022 and licensed under GPL v3
 ---------------------------------------------------------------------------------------------------------
@@ -38,7 +38,14 @@ entity keyboard is
       -- CPC4MEGA65: matriz de teclado del Amstrad_motherboard (rtl/Amstrad_motherboard.v,
       -- puertos Y/X del submodulo hid original, ahora sustituido)
       cpc_row_i            : in  std_logic_vector(3 downto 0);  -- Y: fila seleccionada (desde i8255 portC[3:0])
-      cpc_col_o            : out std_logic_vector(7 downto 0)   -- X: columna leida (hacia YM2149 IOA_in), activo bajo
+      cpc_col_o            : out std_logic_vector(7 downto 0);  -- X: columna leida (hacia YM2149 IOA_in), activo bajo
+
+      -- CPC4MEGA65 M3: joysticks, ya en ACTIVO ALTO (main.vhd invierte lo que da el framework)
+      -- y en el orden de bits del CPC: 0=Arriba 1=Abajo 2=Izquierda 3=Derecha 4=Fire1 5=Fire2
+      -- 6=Fire3. Fire2/Fire3 se dejan a '0' desde main.vhd: el puerto del MEGA65 solo da un
+      -- boton (ver el comentario de la seccion "Joystick" mas abajo).
+      joy1_i               : in  std_logic_vector(6 downto 0);  -- joystick 0 del CPC -> fila 9
+      joy2_i               : in  std_logic_vector(6 downto 0)   -- joystick 1 del CPC -> fila 6
    );
 end keyboard;
 
@@ -132,6 +139,10 @@ signal key_state  : std_logic_vector(79 downto 0) := (others => '0');
 -- Matriz del CPC: 10 filas x 8 columnas = 80 bits, activo alto (1 = pulsada), misma
 -- convencion que el array key[16][8] de rtl/hid.sv. Indice = fila*8 + columna.
 signal key_matrix : std_logic_vector(79 downto 0);
+
+-- CPC4MEGA65 M3: joystick colocado ya en la forma de una fila de la matriz (bit 7 = teclado)
+signal joy_row9   : std_logic_vector(7 downto 0);
+signal joy_row6   : std_logic_vector(7 downto 0);
 
 begin
 
@@ -234,17 +245,40 @@ begin
       key_matrix(70) <= key_state(m65_capslock);
       key_matrix(71) <= key_state(m65_z);
 
-      -- Fila 9: solo Delete/Backspace - el resto de la fila es la superposicion de joystick
-      -- en el core original (Milestone 3, no mapeada aqui)
+      -- Fila 9: solo Delete/Backspace (bit 7). Los bits 0..6 son el joystick 0 del CPC y se
+      -- superponen en el multiplexor de abajo, no aqui.
       key_matrix(79) <= key_state(m65_ins_del);
    end process cpc_matrix;
+
+   ---------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M3: Joystick
+   --
+   -- En el CPC el joystick NO es un periferico aparte: son dos filas de la propia matriz de
+   -- teclado, y el core original lo resuelve con un OR antes de invertir
+   -- (rtl/hid.sv:41-48, "X = ~(key[Y] | joy1 | joy2 | mouse)"). Se replica igual.
+   --
+   --   Joystick 0 del CPC -> fila 9. Ahi solo teniamos mapeado el bit 7 (Delete), asi que los
+   --                         bits 0..6 estaban libres: no pisa ninguna tecla.
+   --   Joystick 1 del CPC -> fila 6. Esa fila SI tiene teclas reales (6 5 R T G F B V) y el
+   --                         joystick se superpone encima, en paralelo. Eso no es un descuido:
+   --                         es como esta cableado el CPC de verdad, y es la razon de que el
+   --                         segundo joystick del CPC sea conocido por provocar pulsaciones
+   --                         fantasma en esas teclas. Se reproduce tal cual.
+   --
+   -- Bit 7 a '0' en los dos casos: el joystick del CPC son 7 lineas (4 direcciones + 3 botones)
+   -- y el bit 7 pertenece al teclado. Es lo mismo que hace hid.sv, donde joy1/joy2 son de 7
+   -- bits y Verilog los extiende con cero al OR-earlos contra los 8 bits de X.
+   ---------------------------------------------------------------------------------------
+
+   joy_row9 <= '0' & joy1_i;
+   joy_row6 <= '0' & joy2_i;
 
    ---------------------------------------------------------------------------------------
    -- Selecciona la fila pedida por el i8255 y la devuelve activa a nivel bajo (mismo
    -- convenio que "X = ~(key[Y] | ...)" en rtl/hid.sv). Filas >9 no existen en el CPC real
    -- (el array original tampoco las escribe nunca) - se devuelven como "nada pulsado".
    ---------------------------------------------------------------------------------------
-   row_mux : process (cpc_row_i, key_matrix)
+   row_mux : process (cpc_row_i, key_matrix, joy_row6, joy_row9)
    begin
       case to_integer(unsigned(cpc_row_i)) is
          when 0      => cpc_col_o <= not key_matrix( 7 downto  0);
@@ -253,10 +287,10 @@ begin
          when 3      => cpc_col_o <= not key_matrix(31 downto 24);
          when 4      => cpc_col_o <= not key_matrix(39 downto 32);
          when 5      => cpc_col_o <= not key_matrix(47 downto 40);
-         when 6      => cpc_col_o <= not key_matrix(55 downto 48);
+         when 6      => cpc_col_o <= not (key_matrix(55 downto 48) or joy_row6);
          when 7      => cpc_col_o <= not key_matrix(63 downto 56);
          when 8      => cpc_col_o <= not key_matrix(71 downto 64);
-         when 9      => cpc_col_o <= not key_matrix(79 downto 72);
+         when 9      => cpc_col_o <= not (key_matrix(79 downto 72) or joy_row9);
          when others => cpc_col_o <= (others => '1');
       end case;
    end process row_mux;

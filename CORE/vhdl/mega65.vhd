@@ -248,12 +248,14 @@ signal main_rst               : std_logic;
 -- comentario largo en config.vhd/OPTM_ITEMS.
 -- CPC4MEGA65 (M2): +3 respecto a M1B006, por las tres lineas nuevas (Drive A:, Drive B: y
 -- separador) al principio de OPTM_ITEMS. Justo el reajuste manual del que avisa la wiki.
-constant C_MENU_HDMI_16_9_50   : natural := 8;
-constant C_MENU_HDMI_4_3_50    : natural := 9;
-constant C_MENU_HDMI_5_4_50    : natural := 10;
-constant C_MENU_CRT_EMULATION  : natural := 14;
-constant C_MENU_HDMI_ZOOM      : natural := 15;
-constant C_MENU_IMPROVE_AUDIO  : natural := 16;
+-- CPC4MEGA65 (M3): +2 mas, por "Swap joystick ports" y su separador.
+constant C_MENU_FLIP_JOYS      : natural := 5;
+constant C_MENU_HDMI_16_9_50   : natural := 10;
+constant C_MENU_HDMI_4_3_50    : natural := 11;
+constant C_MENU_HDMI_5_4_50    : natural := 12;
+constant C_MENU_CRT_EMULATION  : natural := 16;
+constant C_MENU_HDMI_ZOOM      : natural := 17;
+constant C_MENU_IMPROVE_AUDIO  : natural := 18;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -534,7 +536,12 @@ begin
    qnice_ascal_triplebuf_o    <= '0';
 
    -- Flip joystick ports (i.e. the joystick in port 2 is used as joystick 1 and vice versa)
-   qnice_flip_joyports_o      <= '0';
+   -- CPC4MEGA65 M3: el intercambio lo hace entero el framework (M2M/vhdl/framework.vhd, su
+   -- "debouncer" con flip_joys_i), asi que basta con enganchar el item de menu. Merece la pena
+   -- tenerlo en un core de CPC: la maquina real solo trae UN conector de joystick (el 0), el
+   -- segundo necesita una Y, asi que quien juegue va a querer elegir en que puerto del MEGA65
+   -- enchufa sin tener que acordarse de cual es "el primero".
+   qnice_flip_joyports_o      <= qnice_osm_control_i(C_MENU_FLIP_JOYS);
 
    ---------------------------------------------------------------------------------------------
    -- Core specific device handling (QNICE clock domain)

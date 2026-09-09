@@ -698,6 +698,57 @@ Nuestro `clk_main` ya es 64 MHz exactos, así que el divisor es idéntico al del
    por `cache_dirty_o`/`cache_flushing_o` y el retardo de flush de `vdrives`. Es la parte que
    ningún test de solo-lectura cubre.
 
+## 10. M3: joystick (2026-09-07)
+
+Milestone mucho más pequeño que M2, y por una razón concreta: **en el CPC el joystick no es un
+periférico aparte, son dos filas de la propia matriz de teclado**. Todo el trabajo del core
+original cabe en cinco líneas (`rtl/hid.sv:41-48`):
+
+```verilog
+wire row9 = (Y == 9);
+wire row6 = (Y == 6);
+assign X = ~(key[Y] | joy1 | joy2 | mouse);
+
+wire [6:0] joy1 = row9 ? {joystick1[6:4], joystick1[0], joystick1[1], joystick1[2], joystick1[3]} : 7'd0;
+wire [6:0] joy2 = row6 ? {joystick2[6:4], joystick2[0], joystick2[1], joystick2[2], joystick2[3]} : 7'd0;
+```
+
+El orden de bits sale de ahí, no de documentación externa: el reordenado
+`{[6:4], [0], [1], [2], [3]}` sobre el bus de MiSTer (`[0]`=Derecha, `[1]`=Izquierda,
+`[2]`=Abajo, `[3]`=Arriba) da la disposición del CPC: **0=Arriba 1=Abajo 2=Izquierda
+3=Derecha 4=Fire1 5=Fire2 6=Fire3**.
+
+### 10.1 Las dos filas no son equivalentes
+
+| Joystick | Fila | Situación |
+|---|---|---|
+| 0 (principal) | 9 | **Libre.** Nuestro `keyboard.vhd` solo usaba su bit 7 (Delete), así que los bits 0..6 no pisan ninguna tecla. |
+| 1 (secundario) | 6 | **Ocupada** por `6 5 R T G F B V`. El joystick se superpone en paralelo. |
+
+Lo segundo **no es un descuido del port ni del core original**: es cómo está cableado el CPC de
+verdad, y es la razón conocida de que el segundo joystick del CPC provoque pulsaciones fantasma
+en esas teclas. Se reproduce tal cual, que es lo correcto en un port.
+
+### 10.2 Intercambio de puertos
+
+Lo hace entero el framework: `M2M/vhdl/framework.vhd` instancia un `debouncer` con
+`flip_joys_i` (framework.vhd:505-520) alimentado desde `qnice_flip_joyports_i`. Basta un item
+de menú. Merece la pena en un core de CPC porque **la máquina real solo trae UN conector de
+joystick** (el 0); el segundo necesita una Y, así que el usuario querrá elegir en qué puerto del
+MEGA65 enchufa sin acordarse de cuál es "el primero".
+
+### 10.3 Fire2 sin mapear (decisión del usuario, 2026-09-07)
+
+El CPC tiene Fire1, Fire2 y Fire3; el puerto de joystick del MEGA65 expone **un solo botón**.
+Sacar un segundo obligaría a interpretar las líneas POT, que depende del adaptador concreto.
+Decisión: dejar Fire2/Fire3 a `'0'` y revisitar solo si aparece un juego concreto que lo pida.
+La mayoría de juegos del CPC usan solo Fire1.
+
+### 10.4 Lo que NO entra en M3
+
+El `hid.sv` original también superpone un ratón sobre las mismas filas (`mouse` en el OR de
+`X`). Sigue en el backlog, no en este milestone.
+
 ## 8. Decisiones pendientes
 
 1. **Diseño de memoria M1A (sección 4.2) ya validado contra la Porting

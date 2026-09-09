@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 2 - Build M2002\n\n" &
+   "Status: Milestone 3 - Build M3001\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -97,7 +97,8 @@ constant SCR_WELCOME : string :=
    " - PAL video\n" &
    " - Native CPC6128 (128k RAM)\n" &
    " - Keyboard\n" &
-   " - Disk drives A: and B: (.DSK)\n\n" &
+   " - Disk drives A: and B: (.DSK)\n" &
+   " - Joystick\n\n" &
 
    "    Press Space to continue.\n\n\n";
 
@@ -336,7 +337,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 19;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 21;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -344,8 +345,8 @@ constant OPTM_SIZE         : natural := 19;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 12;  -- alto real del menu principal (12 lineas visibles:
-                                             -- las 19 de OPTM_ITEMS menos las 7 del submenu HDMI)
+constant OPTM_DY           : natural := 14;  -- alto real del menu principal (14 lineas visibles:
+                                             -- las 21 de OPTM_ITEMS menos las 7 del submenu HDMI)
 
 -- CPC4MEGA65 (M1B003): menu propio. El de la plantilla traia tres items "Drive X/Y/Z" con el
 -- atributo OPTM_G_MOUNT_DRV, y con C_VDNUM=0 (sin disquetera hasta Milestone 2) el firmware
@@ -380,20 +381,22 @@ constant OPTM_ITEMS        : string :=
    " Drive A:%s\n"          &    -- 2   <- unidad 0 del u765 (primera linea OPTM_G_MOUNT_DRV)
    " Drive B:%s\n"          &    -- 3   <- unidad 1 del u765
    "\n"                     &    -- 4
-   " HDMI: %s\n"            &    -- 5   submenu HDMI: inicio
-   " HDMI Settings\n"       &    -- 6
-   "\n"                     &    -- 7
-   " 720p 50 Hz 16:9\n"     &    -- 8   <- C_MENU_HDMI_16_9_50
-   " 576p 50 Hz 4:3\n"      &    -- 9   <- C_MENU_HDMI_4_3_50
-   " 576p 50 Hz 5:4\n"      &    -- 10  <- C_MENU_HDMI_5_4_50
-   "\n"                     &    -- 11
-   " Back to main menu\n"   &    -- 12  submenu HDMI: fin
+   " Swap joystick ports\n" &    -- 5   <- C_MENU_FLIP_JOYS
+   "\n"                     &    -- 6
+   " HDMI: %s\n"            &    -- 7   submenu HDMI: inicio
+   " HDMI Settings\n"       &    -- 8
+   "\n"                     &    -- 9
+   " 720p 50 Hz 16:9\n"     &    -- 10  <- C_MENU_HDMI_16_9_50
+   " 576p 50 Hz 4:3\n"      &    -- 11  <- C_MENU_HDMI_4_3_50
+   " 576p 50 Hz 5:4\n"      &    -- 12  <- C_MENU_HDMI_5_4_50
    "\n"                     &    -- 13
-   " HDMI: CRT emulation\n" &    -- 14  <- C_MENU_CRT_EMULATION
-   " HDMI: Zoom-in\n"       &    -- 15  <- C_MENU_HDMI_ZOOM
-   " Audio improvements\n"  &    -- 16  <- C_MENU_IMPROVE_AUDIO
-   "\n"                     &    -- 17
-   " Close Menu\n";              -- 18
+   " Back to main menu\n"   &    -- 14  submenu HDMI: fin
+   "\n"                     &    -- 15
+   " HDMI: CRT emulation\n" &    -- 16  <- C_MENU_CRT_EMULATION
+   " HDMI: Zoom-in\n"       &    -- 17  <- C_MENU_HDMI_ZOOM
+   " Audio improvements\n"  &    -- 18  <- C_MENU_IMPROVE_AUDIO
+   "\n"                     &    -- 19
+   " Close Menu\n";              -- 20
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -406,10 +409,11 @@ constant OPTM_ITEMS        : string :=
 -- que los grupos de video se han renumerado a partir del 3.
 constant OPTM_G_MOUNT_A    : integer := 1;
 constant OPTM_G_MOUNT_B    : integer := 2;
-constant OPTM_G_HDMI       : integer := 3;
-constant OPTM_G_CRT        : integer := 4;
-constant OPTM_G_Zoom       : integer := 5;
-constant OPTM_G_Audio      : integer := 6;
+constant OPTM_G_FLIP_JOYS  : integer := 3;   -- CPC4MEGA65 M3
+constant OPTM_G_HDMI       : integer := 4;
+constant OPTM_G_CRT        : integer := 5;
+constant OPTM_G_Zoom       : integer := 6;
+constant OPTM_G_Audio      : integer := 7;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -424,21 +428,24 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_MOUNT_B + OPTM_G_MOUNT_DRV,        --  3 Drive B: (unidad 1)
                                              OPTM_G_LINE,                              --  4 Line
 
-                                             OPTM_G_SUBMENU,                           --  5 HDMI submenu: START ("HDMI: %s")
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  6 Headline "HDMI Settings"
-                                             OPTM_G_LINE,                              --  7 Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              --  8 720p 50 Hz 16:9, por defecto
-                                             OPTM_G_HDMI,                              --  9 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 10 576p 50 Hz 5:4
-                                             OPTM_G_LINE,                              -- 11 Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 12 HDMI submenu: END
+                                             OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      --  5 Swap joystick ports (on/off)
+                                             OPTM_G_LINE,                              --  6 Line
 
+                                             OPTM_G_SUBMENU,                           --  7 HDMI submenu: START ("HDMI: %s")
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  8 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              --  9 Line
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 10 720p 50 Hz 16:9, por defecto
+                                             OPTM_G_HDMI,                              -- 11 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 12 576p 50 Hz 5:4
                                              OPTM_G_LINE,                              -- 13 Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 14 CRT emulation (on/off)
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 15 Zoom-in (on/off)
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 16 Audio improvements (on/off)
-                                             OPTM_G_LINE,                              -- 17 Line
-                                             OPTM_G_CLOSE                              -- 18 Close Menu
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 14 HDMI submenu: END
+
+                                             OPTM_G_LINE,                              -- 15 Line
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 16 CRT emulation (on/off)
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 17 Zoom-in (on/off)
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 18 Audio improvements (on/off)
+                                             OPTM_G_LINE,                              -- 19 Line
+                                             OPTM_G_CLOSE                              -- 20 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

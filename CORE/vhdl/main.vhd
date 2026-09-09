@@ -287,6 +287,11 @@ signal mb_audio_l, mb_audio_r : std_logic_vector(7 downto 0);
 signal mb_kbd_row : std_logic_vector(3 downto 0);
 signal mb_kbd_col : std_logic_vector(7 downto 0);
 
+-- CPC4MEGA65 M3: joysticks en activo alto y en el orden de bits de la matriz del CPC
+-- (0=Arriba 1=Abajo 2=Izquierda 3=Derecha 4=Fire1 5=Fire2 6=Fire3) - ver seccion "joysticks"
+signal joy1_cpc   : std_logic_vector(6 downto 0);
+signal joy2_cpc   : std_logic_vector(6 downto 0);
+
 -- rom_map: mapa de bancos de ROM alta que existen de verdad. La MMU lo usa para filtrar la
 -- seleccion de banco que hace el software: "ROMbank <= rom_map[D] ? D : 8'h00"
 -- (Amstrad_MMU.v:71), o sea que un banco no declarado cae en el 0 (BASIC).
@@ -683,6 +688,40 @@ begin
    -- doc/m2m/exceptions.md)
    ----------------------------------------------------------------------------------------------
 
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M3: joysticks
+   --
+   -- El framework los entrega en ACTIVO BAJO y ya debotados e intercambiados si toca (el
+   -- intercambio de puertos lo hace M2M/vhdl/framework.vhd con su propio "debouncer" y la
+   -- senal flip_joys_i, alimentada desde el menu - aqui no hay que hacer nada para eso).
+   --
+   -- El orden de bits es el de la matriz del CPC, sacado de rtl/hid.sv:47-48: alli el core
+   -- original reordena el bus de joystick de MiSTer con
+   -- "{joystick[6:4], joystick[0], joystick[1], joystick[2], joystick[3]}", que en el bus de
+   -- MiSTer ([0]=Derecha [1]=Izquierda [2]=Abajo [3]=Arriba) equivale a
+   -- 0=Arriba 1=Abajo 2=Izquierda 3=Derecha 4=Fire1 5=Fire2 6=Fire3. Como aqui partimos de
+   -- senales con nombre y no de ese bus, se escribe directamente en el orden del CPC.
+   --
+   -- Fire2 y Fire3 se dejan a '0' a proposito (decision del usuario, 2026-09-07): el puerto de
+   -- joystick del MEGA65 solo expone un boton, y sacar un segundo obligaria a interpretar las
+   -- lineas POT, que depende del adaptador concreto. La mayoria de juegos del CPC usan solo
+   -- Fire1; si aparece alguno que necesite Fire2 se revisita con ese caso concreto delante.
+   ----------------------------------------------------------------------------------------------
+
+   joy1_cpc <= "00" &                    -- Fire3, Fire2: sin mapear
+               (not joy_1_fire_n_i)  &   -- Fire1
+               (not joy_1_right_n_i) &
+               (not joy_1_left_n_i)  &
+               (not joy_1_down_n_i)  &
+               (not joy_1_up_n_i);
+
+   joy2_cpc <= "00" &
+               (not joy_2_fire_n_i)  &
+               (not joy_2_right_n_i) &
+               (not joy_2_left_n_i)  &
+               (not joy_2_down_n_i)  &
+               (not joy_2_up_n_i);
+
    i_keyboard : entity work.keyboard
       port map (
          clk_main_i           => clk_main_i,
@@ -691,7 +730,10 @@ begin
          key_pressed_n_i      => kb_key_pressed_n_i,
 
          cpc_row_i            => mb_kbd_row,
-         cpc_col_o            => mb_kbd_col
+         cpc_col_o            => mb_kbd_col,
+
+         joy1_i               => joy1_cpc,
+         joy2_i               => joy2_cpc
       ); -- i_keyboard
 
    ----------------------------------------------------------------------------------------------
