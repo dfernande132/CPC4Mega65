@@ -171,6 +171,29 @@ it happens inside the line changes).
 MiSTer2MEGA65
 -------------
 
+### `M2M/vhdl/top_mega65-r6.vhd`: routed the internal floppy drive pins to the core (Milestone 4, 2026-09-09)
+
+The template ties all ten FDC **outputs** to their inactive level right in the top level
+(`f_density_o`, `f_motora_o`, `f_motorb_o`, `f_selecta_o`, `f_selectb_o`, `f_side1_o`,
+`f_stepdir_o`, `f_step_o`, `f_wdata_o`, `f_wgate_o`) and leaves the five **inputs**
+(`f_diskchanged_i`, `f_index_i`, `f_rdata_i`, `f_track0_i`, `f_writeprotect_i`) unconnected.
+That is why these signals do not appear in `framework.vhd` at all: **the framework never routes
+them anywhere**. Milestone 4 needs them, so the tie-offs were replaced by a wiring of all
+fifteen into the `CORE : entity work.MEGA65_Core` instance.
+
+**Only this one framework file changes.** `framework.vhd` does not instantiate the core -
+`top_mega65-r6.vhd` instantiates `i_framework` (line 574) and `CORE` (line 757) separately and
+wires them together - so there is nothing to thread through the framework itself.
+
+Verified before writing any of this: **no sibling core does this**. Searching `f_motora`,
+`f_rdata`, `f_index`, `f_track0` and `f_stepdir` across QL4M65, C64MEGA65 and AExp finds them
+only in each project's own copy of the framework top levels and XDC constraints, never in any
+`CORE/` directory. There was no precedent to copy, which is why `CORE/vhdl/floppy_phys.vhd` is
+written from scratch.
+
+Only the R6 top level is touched, because R6 is the only board this project builds for so far.
+The same change will be needed in `top_mega65-r3/r4/r5.vhd` when other boards are added.
+
 See `core/.research/PORTING-PLAN.md` section 4.2 for why the M1A memory subsystem redesign
 did **not** require any framework or core file changes (it replaces `rtl/sdram.v`, excluded
 wholesale from the build rather than modified, with two new `dualport_2clk_ram` instances in

@@ -108,6 +108,14 @@ add_files -norecurse -fileset sources_1 [list \
 ]
 set_property file_type SystemVerilog [get_files "$core_cpc_dir/rtl/u765/u765.sv"]
 
+# CPC4MEGA65 (M4A): ficheros VHDL propios que no estaban en el .xpr original de la plantilla.
+# Los demas (main.vhd, mega65.vhd, keyboard.vhd, config.vhd, globals.vhd...) si venian con
+# ella, por eso no aparecen aqui. add_files es idempotente: si el fichero ya esta en el
+# proyecto de una ejecucion anterior, no lo duplica.
+add_files -norecurse -fileset sources_1 [list \
+    "E:/CPC4MEGA65/core/CORE/vhdl/floppy_phys.vhd" \
+]
+
 # CPC4MEGA65: si el log de sintesis da mas casos de [Synth 8-10632]/[Synth 8-1873]/
 # [Synth 8-2671] (construcciones SystemVerilog en un fichero marcado como Verilog puro) en
 # algun otro fichero - la correccion es marcar ESE fichero concreto como SystemVerilog

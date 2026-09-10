@@ -49,6 +49,25 @@ port (
    -- Flip joystick ports
    qnice_flip_joyports_o   : out std_logic;
 
+   -- CPC4MEGA65 M4: disquetera fisica interna del MEGA65 (interfaz Shugart de 34 pines de la
+   -- placa). La plantilla ataba estas salidas a su valor inactivo en top_mega65-r6.vhd y no las
+   -- enrutaba a ningun sitio; ver core/doc/m2m/exceptions.md. Todo en dominio del core.
+   f_density_o             : out std_logic;
+   f_motora_o              : out std_logic;
+   f_motorb_o              : out std_logic;
+   f_selecta_o             : out std_logic;
+   f_selectb_o             : out std_logic;
+   f_side1_o               : out std_logic;
+   f_stepdir_o             : out std_logic;
+   f_step_o                : out std_logic;
+   f_wdata_o               : out std_logic;
+   f_wgate_o               : out std_logic;
+   f_index_i               : in  std_logic;
+   f_track0_i              : in  std_logic;
+   f_writeprotect_i        : in  std_logic;
+   f_diskchanged_i         : in  std_logic;
+   f_rdata_i               : in  std_logic;
+
    -- On-Screen-Menu selections
    qnice_osm_control_i     : in  std_logic_vector(255 downto 0);
 
@@ -249,13 +268,15 @@ signal main_rst               : std_logic;
 -- CPC4MEGA65 (M2): +3 respecto a M1B006, por las tres lineas nuevas (Drive A:, Drive B: y
 -- separador) al principio de OPTM_ITEMS. Justo el reajuste manual del que avisa la wiki.
 -- CPC4MEGA65 (M3): +2 mas, por "Swap joystick ports" y su separador.
+-- CPC4MEGA65 (M4A): +1 mas, por "Floppy: motor test".
 constant C_MENU_FLIP_JOYS      : natural := 5;
-constant C_MENU_HDMI_16_9_50   : natural := 10;
-constant C_MENU_HDMI_4_3_50    : natural := 11;
-constant C_MENU_HDMI_5_4_50    : natural := 12;
-constant C_MENU_CRT_EMULATION  : natural := 16;
-constant C_MENU_HDMI_ZOOM      : natural := 17;
-constant C_MENU_IMPROVE_AUDIO  : natural := 18;
+constant C_MENU_FLOPPY_TEST    : natural := 6;
+constant C_MENU_HDMI_16_9_50   : natural := 11;
+constant C_MENU_HDMI_4_3_50    : natural := 12;
+constant C_MENU_HDMI_5_4_50    : natural := 13;
+constant C_MENU_CRT_EMULATION  : natural := 17;
+constant C_MENU_HDMI_ZOOM      : natural := 18;
+constant C_MENU_IMPROVE_AUDIO  : natural := 19;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -298,6 +319,17 @@ signal main_cache_busy        : std_logic;   -- cualquier unidad con datos sin v
 -- CPC4MEGA65 M2 (M2002): "la disquetera esta girando", desde main.vhd (latch del motor del
 -- CPC). Dominio del core, un solo nivel: para un LED de placa no hace falta CDC.
 signal main_drive_active      : std_logic;
+
+-- CPC4MEGA65 M4A: estado de la disquetera FISICA (no confundir con la de imagen de M2).
+-- Todo en dominio del core; el enable viene del menu y hay que cruzarlo desde QNICE.
+signal main_floppy_enable     : std_logic;
+signal main_floppy_busy       : std_logic;
+signal main_floppy_ready      : std_logic;
+signal main_floppy_error      : std_logic;
+signal main_floppy_blink      : std_logic;
+signal main_floppy_disk_in    : std_logic;
+signal floppy_led_on          : std_logic;
+signal floppy_led_col         : std_logic_vector(23 downto 0);
 
 -- Lado "SD block/byte" main.vhd <-> vdrives (dominio de QNICE)
 signal qnice_sd_lba           : std_logic_vector(31 downto 0);
@@ -398,7 +430,8 @@ begin
    -- main.vhd contains the actual MiSTer core
    i_main : entity work.main
       generic map (
-         G_VDNUM              => C_VDNUM
+         G_VDNUM              => C_VDNUM,
+         G_CLK_HZ             => CORE_CLK_SPEED   -- CPC4MEGA65 M4A, ver main.vhd
       )
       port map (
          clk_main_i           => main_clk,
@@ -440,6 +473,30 @@ begin
          qnice_sd_buff_din_o     => qnice_sd_buff_din,
          qnice_sd_buff_wr_i      => qnice_sd_buff_wr,
          main_drive_active_o     => main_drive_active,
+
+         -- CPC4MEGA65 M4A: disquetera fisica interna
+         floppy_enable_i         => main_floppy_enable,
+         floppy_busy_o           => main_floppy_busy,
+         floppy_ready_o          => main_floppy_ready,
+         floppy_error_o          => main_floppy_error,
+         floppy_index_blink_o    => main_floppy_blink,
+         floppy_disk_in_o        => main_floppy_disk_in,
+
+         f_density_o             => f_density_o,
+         f_motora_o              => f_motora_o,
+         f_motorb_o              => f_motorb_o,
+         f_selecta_o             => f_selecta_o,
+         f_selectb_o             => f_selectb_o,
+         f_side1_o               => f_side1_o,
+         f_stepdir_o             => f_stepdir_o,
+         f_step_o                => f_step_o,
+         f_wdata_o               => f_wdata_o,
+         f_wgate_o               => f_wgate_o,
+         f_index_i               => f_index_i,
+         f_track0_i              => f_track0_i,
+         f_writeprotect_i        => f_writeprotect_i,
+         f_diskchanged_i         => f_diskchanged_i,
+         f_rdata_i               => f_rdata_i,
 
          clk_main_speed_i     => CORE_CLK_SPEED,
 
@@ -678,8 +735,41 @@ begin
                                      main_cache_flushing /= (main_cache_flushing'range => '0'))
                            else '0';
 
-   main_drive_led_o     <= main_drive_active or main_cache_busy;
-   main_drive_led_col_o <= x"0000FF" when main_cache_busy = '1' else x"FF0000";
+   ---------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4A: el LED como instrumento de diagnostico de la disquetera fisica
+   --
+   -- Este proyecto no tiene disponible la consola serie de QNICE, asi que el LED de la placa
+   -- es la unica salida de medida para la fase A. En vez de un simple "va / no va", codifica
+   -- QUE ha fallado, que es lo que hace util una primera prueba contra un interfaz cuyas
+   -- polaridades no estan verificadas todavia (ver floppy_phys.vhd):
+   --
+   --   LED apagado          -> la prueba esta desactivada en el menu
+   --   AMARILLO fijo        -> motor arrancando o cabeza buscando la pista 0
+   --   ROJO fijo            -> recalibrado fallido: se agotaron 90 pasos sin ver f_track0_i.
+   --                           Sintoma de sentido de f_stepdir_o invertido, cable mal, o
+   --                           ausencia de disquetera
+   --   VERDE parpadeando    -> TODO BIEN: pista 0 encontrada y el indice llega. El parpadeo
+   --      ~2,5 veces/s         es el propio pulso de indice dividido por dos (300 RPM = 5 Hz)
+   --   VERDE fijo           -> la mecanica responde pero no llegan pulsos de indice: no hay
+   --                           disquete metido, o el disco no gira
+   --
+   -- Con la prueba desactivada, el LED vuelve a lo que hace desde M2 (rojo = disquetera de
+   -- imagen en marcha, azul = queda cache por volcar a la SD).
+   ---------------------------------------------------------------------------------------
+
+   main_floppy_enable <= main_osm_control_i(C_MENU_FLOPPY_TEST);
+
+   floppy_led_on  <= main_floppy_blink when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
+                     '1';
+   floppy_led_col <= x"FF0000" when main_floppy_error = '1' else
+                     x"FFFF00" when main_floppy_busy  = '1' else
+                     x"00FF00";
+
+   main_drive_led_o     <= floppy_led_on when main_floppy_enable = '1' else
+                           (main_drive_active or main_cache_busy);
+   main_drive_led_col_o <= floppy_led_col when main_floppy_enable = '1' else
+                           x"0000FF"      when main_cache_busy = '1' else
+                           x"FF0000";
 
    -- Adaptadores a los tipos de array de vdrives_pkg. sd_lba y sd_buff_din se replican a las
    -- dos unidades porque el u765 solo tiene un juego (Amstrad.sv:193/199 hace lo mismo con

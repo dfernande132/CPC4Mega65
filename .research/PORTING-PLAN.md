@@ -749,6 +749,154 @@ La mayoría de juegos del CPC usan solo Fire1.
 El `hid.sv` original también superpone un ratón sobre las mismas filas (`mouse` en el OR de
 `X`). Sigue en el backlog, no en este milestone.
 
+## 11. M4: disquetera física interna del MEGA65 (2026-09-09)
+
+### 11.1 Lo primero: no hay precedente que copiar (verificado, no supuesto)
+
+El usuario pidió mirar cómo lo hacen AExp y C64MEGA65. **No lo hacen.** Comprobado por
+búsqueda directa de las señales `f_*` en los tres cores hermanos:
+
+| Dónde | Resultado |
+|---|---|
+| `M2M/MEGA65-R6.xdc` (los tres cores) | los 14 pines existen y están constrained |
+| `M2M/vhdl/top_mega65-r6.vhd` | son puertos del top level, y se **atan a valor inactivo** ahí mismo (líneas 535-544) |
+| `M2M/vhdl/framework.vhd` | **ni aparecen** — el framework no los enruta |
+| `C64MEGA65/CORE/**` | sin coincidencias |
+| `AExp/CORE/**` | sin coincidencias |
+
+O sea que **ningún core hermano toca la disquetera física**. Eso sigue siendo cierto.
+
+**PERO el encuadre inicial de esta sección era erróneo y hay que corregirlo** (2026-09-10, el
+usuario objetó con razón que AExp sí lee y escribe discos de Amiga). AExp **sí tiene disquetera
+completa, de lectura y escritura** — lo que pasa es que trabaja sobre **imágenes ADF**, no sobre
+medio físico:
+
+> *"Floppy: df0 with read/write ADF mount from the OSM (image staged in HyperRAM at word
+> 0x200000). Mount via OSM ' ADF:' → Shell streams to HyperRAM (QNICE device 0x0103,
+> `adf_mount_wrapper.vhd`) → `adf_track_engine.vhd` serves Paula over the IO_FPGA host channel
+> with bit-exact minimig_fdd.cpp MFM encoding."* — `AExp/AGENTS.md`
+
+Así que **sí hay precedente que estudiar**, solo que de la *arquitectura*, no de los pines. Y es
+muy relevante, porque valida la Opción B elegida más abajo y acota mejor qué es lo realmente
+nuevo. Ver 11.4bis.
+
+**La buena noticia sobre el tamaño de la excepción**: `framework.vhd` **no** instancia el core.
+`top_mega65-r6.vhd` instancia por separado `i_framework` (línea 574) y `CORE : entity
+work.MEGA65_Core` (línea 757) y los cablea entre sí. Así que llevar los pines hasta nuestro
+core es **un solo fichero de framework tocado**: quitar los tie-off y cablearlos a la instancia
+`CORE`. `framework.vhd` no se toca.
+
+### 11.2 Interfaz disponible (Shugart/PC de 34 pines, completo)
+
+| Salidas | Entradas |
+|---|---|
+| `f_density_o` (REDWC), `f_motora_o`, `f_motorb_o`, `f_selecta_o`, `f_selectb_o`, `f_side1_o`, `f_stepdir_o`, `f_step_o`, `f_wdata_o`, `f_wgate_o` | `f_diskchanged_i`, `f_index_i`, `f_rdata_i`, `f_track0_i`, `f_writeprotect_i` |
+
+No falta nada para un controlador de disquete completo, lectura y escritura.
+
+### 11.3 Qué puede significar M4 realmente (y qué no)
+
+**El CPC usa disquetes de 3 pulgadas (Amstrad/Hitachi CF-2). El MEGA65 lleva una disquetera de
+3,5 pulgadas. Un disco de CPC no entra físicamente.** Así que M4 no puede ser "leer discos
+originales del CPC" — es **leer/escribir un disquete de 3,5" formateado con formato CPC**, que
+es justo lo que dice el criterio del milestone. Compatible: el formato DATA del CPC (40 pistas,
+1 cara, 9 sectores de 512 B, IDs &C1-&C9) es MFM a 250 kbps, lo mismo que un 3,5" DD.
+
+### 11.4 El problema de arquitectura
+
+`u765` es un controlador **de imagen**: parsea estructuras `.DSK` (cabecera de disco, cabeceras
+de pista, datos) leídas en bloques LBA de 512 B que le sirve `vdrives`/QNICE. **No sabe hacer
+MFM.** Un disquete físico da **flujo MFM crudo** por `f_rdata_i`. Hay que unir esos dos mundos.
+
+**Opción A — FDC MFM en tiempo real que sustituya al u765.** Implementar un uPD765 completo
+contra medio físico. Enorme (juego de comandos + separador de datos + timing real). Descartada.
+
+**Opción B — puente MFM↔imagen con caché de disco entero (ELEGIDA).** El `u765` y toda la
+cadena de M2 se quedan **intactos**. Se añade un motor MFM que, al montar, lee las 40 pistas ×
+9 sectores (180 KB) al buffer de imagen que YA existe de M2, **sintetizando la envoltura `.DSK`**
+por delante, de forma que el `u765` ve una imagen normal y todo lo demás funciona sin cambios.
+La escritura es el camino inverso, al volcar la caché.
+
+*Por qué esta*: reutiliza el 100% de M2, ya probado en hardware. Y sobre todo, **el motor MFM no
+tiene que servir sectores en tiempo real** — puede tomarse su tiempo, que es lo que elimina la
+parte más difícil del problema. Coste: montar tarda unos segundos (40 pistas × 200 ms/vuelta ≈
+10 s) y no hay fidelidad a protecciones anticopia (sectores débiles, IDs raros). Aceptable.
+
+**Opción C — servidor de sectores MFM detrás del interfaz de bloques de vdrives.** En vez de que
+QNICE saque los bloques de un `.DSK` de la SD, el motor MFM responde a `sd_rd`/`sd_wr` buscando
+la pista/sector correspondiente. Más elegante en memoria, pero obliga a sintetizar al vuelo los
+bloques de cabecera del `.DSK` y mete el medio físico en el camino crítico de cada petición.
+Guardada como alternativa si B se queda corta.
+
+### 11.4bis Qué se aprende de la disquetera ADF de AExp (2026-09-10)
+
+Estudiado `AExp/CORE/vhdl/adf_track_engine.vhd` y `adf_mount_wrapper.vhd`. Cuatro conclusiones,
+todas útiles:
+
+**1. Sí, pasan la imagen a memoria antes. Eso valida la Opción B.** AExp no sirve a Paula
+directamente desde la SD: el Shell vuelca la imagen entera a memoria y el motor de pista lee de
+ahí. Es exactamente el patrón que se eligió aquí. Diferencia importante: **AExp la pone en
+HyperRAM, no en BRAM**, porque su BRAM está lleno (*"BRAM is at 363.5/365 tiles — full. All
+future buffers MUST live in HyperRAM"*). Nosotros vamos por el 63% y además **reutilizamos el
+buffer de imagen que ya existe de M2**, así que no hace falta memoria nueva — pero si en algún
+momento hiciera falta, HyperRAM es la salida y AExp tiene el patrón probado (`avm_cache` +
+`avm_fifo` para el CDC).
+
+**2. Su códec MFM es de nivel PALABRA, no de flujo.** Y esto es lo que acota de verdad el
+trabajo nuevo. AExp nunca mide tiempos de flujo magnético: Paula le entrega/recibe **palabras de
+16 bits** por una FIFO (`io_fpga`/`io_strobe`), ya sincronizadas. Su codificador
+(`f_mfm_odd`/`f_mfm_even`) y su decodificador (`FindSync`/`GetHeader`/`GetData`) trabajan sobre
+esas palabras.
+
+Conclusión para M4B: el trabajo se parte en dos, y solo la primera mitad no tiene precedente.
+
+| Capa | ¿Precedente en AExp? |
+|---|---|
+| **Separador de datos**: medir intervalos de `f_rdata_i` y sacar bits | **NO. Esto es lo genuinamente nuevo.** Nadie lee medio físico |
+| Sincronizar con la marca, parsear cabecera y datos, verificar | **SÍ**, estructuralmente. Y sincronizan con `0x4489`, que es **la misma palabra de sincronismo** que usa el formato IBM/CPC |
+
+**3. Los dos formatos MFM no son el mismo, pero el sincronismo sí.** Amiga: pista entera, 11
+sectores, separación de bits pares/impares, checksum XOR. IBM/CPC: 9 sectores con IDAM/DAM
+(`A1 A1 A1` = tres `0x4489` seguidos), CRC-16 y huecos entre sectores. Lo transferible es el
+detector de sincronismo a nivel de bit; la estructura por encima hay que escribirla para el
+formato del CPC.
+
+**4. Su arquitectura de escritura es la referencia para M4C.** Mapa de bits de pistas sucias +
+anti-thrashing de 2 s + volcado en segundo plano desde el firmware — el mismo esquema que
+`vdrives`. Ellos tuvieron que añadir una excepción al framework (`HANDLE_CORE_IO`, un callback
+por iteración del bucle principal del Shell) porque no usan `vdrives`. **Nosotros no la
+necesitamos: ya tenemos `vdrives` con su propio camino de volcado**, funcionando desde M2.
+
+**Sentido opuesto, mismo problema.** AExp *codifica* MFM (Paula quiere flujo MFM); nosotros
+*decodificamos* (u765 quiere sectores). La frontera MFM cae en sitios distintos porque en el
+Amiga real es Paula quien hace el MFM, y en el CPC es el propio uPD765.
+
+### 11.5 Fases (cada una con criterio observable en hardware)
+
+**M4A — "el hierro responde"**. Sin nada de MFM todavía.
+- Enrutar `f_*` desde `top_mega65-r6.vhd` hasta `main.vhd` (excepción de framework, un fichero).
+- Módulo `floppy_phys.vhd`: control de motor y selección, `step`/`stepdir` con contador de pista
+  y recalibrado a pista 0 usando `f_track0_i`, detección de pulso de índice.
+- **Criterio**: la disquetera gira y el pulso de índice se detecta a ~5 Hz (300 RPM). Se observa
+  con el LED de la placa, que ya sabemos usar de M2 — sin necesidad de la consola serie de
+  QNICE, que este proyecto no tiene disponible.
+
+**M4B — lectura MFM.** Separador de datos, sincronización con la marca A1, lectura de campos de
+ID y de datos, comprobación de CRC-16.
+- **Criterio**: leer el disco entero al buffer de imagen con la envoltura `.DSK` sintetizada y
+  que `CAT` liste el directorio de un disquete físico.
+
+**M4C — escritura MFM.** Codificador MFM, `f_wgate_o`/`f_wdata_o`, volcado de la caché al medio.
+- **Criterio**: grabar, recargar y que persista — el mismo criterio que cerró M2, ahora contra
+  hierro real.
+
+### 11.6 Notas técnicas de partida para el separador de datos (M4B)
+
+A 250 kbps MFM la celda de bit son 4 µs, y los intervalos entre transiciones de flujo son de
+4, 6 u 8 µs. Con `clk_main_i` a 64 MHz eso son **256, 384 y 512 ciclos**: resolución de sobra
+para clasificar los tres intervalos con un simple contador y ventanas, sin necesidad de PLL en
+la primera versión. `f_rdata_i` entrega pulsos activos a nivel bajo.
+
 ## 8. Decisiones pendientes
 
 1. **Diseño de memoria M1A (sección 4.2) ya validado contra la Porting

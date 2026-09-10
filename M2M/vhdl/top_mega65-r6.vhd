@@ -532,16 +532,14 @@ begin
    eth_reset_o           <= '1';
    eth_txd_o             <= (others => '0');
    eth_txen_o            <= '0';
-   f_density_o           <= '1';
-   f_motora_o            <= '1';
-   f_motorb_o            <= '1';
-   f_selecta_o           <= '1';
-   f_selectb_o           <= '1';
-   f_side1_o             <= '1';
-   f_stepdir_o           <= '1';
-   f_step_o              <= '1';
-   f_wdata_o             <= '1';
-   f_wgate_o             <= '1';
+   -- CPC4MEGA65 M4 (ver core/doc/m2m/exceptions.md): la plantilla ata aqui las 10 salidas de la
+   -- disquetera interna a su valor inactivo, y las 5 entradas se quedan sin conectar - por eso
+   -- las senales f_* no aparecen en framework.vhd: el framework no las enruta a ningun sitio.
+   -- Para Milestone 4 se cablean a la instancia CORE (mas abajo), que es donde vive nuestro
+   -- controlador. Se toca SOLO este fichero: framework.vhd no instancia el core, lo instancia
+   -- este top level por separado, asi que no hay que atravesarlo.
+   -- f_density_o / f_motora_o / f_motorb_o / f_selecta_o / f_selectb_o / f_side1_o /
+   -- f_stepdir_o / f_step_o / f_wdata_o / f_wgate_o -> ver el port map de CORE.
    joystick_5v_disable_o <= '0'; -- Enable 5V power supply to joysticks
    led_g_n_o             <= '1'; -- Off
    led_r_n_o             <= '1'; -- Off
@@ -789,6 +787,24 @@ begin
 
          -- Flip joystick ports
          qnice_flip_joyports_o   => qnice_flip_joyports,
+
+         -- CPC4MEGA65 M4: disquetera fisica interna (interfaz Shugart de la placa).
+         -- Dominio del core: el controlador vive en main.vhd.
+         f_density_o             => f_density_o,
+         f_motora_o              => f_motora_o,
+         f_motorb_o              => f_motorb_o,
+         f_selecta_o             => f_selecta_o,
+         f_selectb_o             => f_selectb_o,
+         f_side1_o               => f_side1_o,
+         f_stepdir_o             => f_stepdir_o,
+         f_step_o                => f_step_o,
+         f_wdata_o               => f_wdata_o,
+         f_wgate_o               => f_wgate_o,
+         f_index_i               => f_index_i,
+         f_track0_i              => f_track0_i,
+         f_writeprotect_i        => f_writeprotect_i,
+         f_diskchanged_i         => f_diskchanged_i,
+         f_rdata_i               => f_rdata_i,
 
          -- On-Screen-Menu selections (in QNICE clock domain)
          qnice_osm_control_i     => qnice_osm_control_m,

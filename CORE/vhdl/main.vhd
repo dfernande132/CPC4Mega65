@@ -19,7 +19,12 @@ use xpm.vcomponents.all;
 
 entity main is
    generic (
-      G_VDNUM                 : natural                     -- amount of virtual drives
+      G_VDNUM                 : natural;                    -- amount of virtual drives
+      -- CPC4MEGA65 M4A: frecuencia de clk_main_i. Hace falta como GENERICO y no vale el puerto
+      -- clk_main_speed_i que ya existe: floppy_phys deriva de el constantes de tiempo (arranque
+      -- de motor, ancho del pulso de step...) que dimensionan contadores, y eso tiene que ser
+      -- una expresion constante en tiempo de elaboracion. Un puerto no lo es.
+      G_CLK_HZ                : natural
    );
    port (
       clk_main_i              : in  std_logic;
@@ -70,6 +75,34 @@ entity main is
       -- del core, un solo nivel - no necesita CDC para un LED (mismo criterio que el
       -- drive_led_o de QL4M65).
       main_drive_active_o     : out std_logic;
+
+      -- CPC4MEGA65 M4A: disquetera fisica interna. enable la enciende el usuario desde el menu;
+      -- las tres senales de estado son las que pinta el LED de la placa (ver mega65.vhd).
+      floppy_enable_i         : in  std_logic;
+      floppy_busy_o           : out std_logic;
+      floppy_ready_o          : out std_logic;
+      floppy_error_o          : out std_logic;
+      -- Conmuta en cada pulso de indice: a 300 RPM el indice llega 5 veces por segundo, asi que
+      -- esto da una onda cuadrada de 2,5 Hz - perfectamente visible en el LED. El pulso crudo
+      -- dura un ciclo de 64MHz y no se veria.
+      floppy_index_blink_o    : out std_logic;
+      floppy_disk_in_o        : out std_logic;
+
+      f_density_o             : out std_logic;
+      f_motora_o              : out std_logic;
+      f_motorb_o              : out std_logic;
+      f_selecta_o             : out std_logic;
+      f_selectb_o             : out std_logic;
+      f_side1_o               : out std_logic;
+      f_stepdir_o             : out std_logic;
+      f_step_o                : out std_logic;
+      f_wdata_o               : out std_logic;
+      f_wgate_o               : out std_logic;
+      f_index_i               : in  std_logic;
+      f_track0_i              : in  std_logic;
+      f_writeprotect_i        : in  std_logic;
+      f_diskchanged_i         : in  std_logic;
+      f_rdata_i               : in  std_logic;
 
       -- MiSTer core main clock speed:
       -- Make sure you pass very exact numbers here, because they are used for avoiding clock drift at derived clocks
@@ -291,6 +324,10 @@ signal mb_kbd_col : std_logic_vector(7 downto 0);
 -- (0=Arriba 1=Abajo 2=Izquierda 3=Derecha 4=Fire1 5=Fire2 6=Fire3) - ver seccion "joysticks"
 signal joy1_cpc   : std_logic_vector(6 downto 0);
 signal joy2_cpc   : std_logic_vector(6 downto 0);
+
+-- CPC4MEGA65 M4A: disquetera fisica
+signal floppy_index_pulse : std_logic;
+signal floppy_index_blink : std_logic := '0';
 
 -- rom_map: mapa de bancos de ROM alta que existen de verdad. La MMU lo usa para filtrar la
 -- seleccion de banco que hace el software: "ROMbank <= rom_map[D] ? D : 8'h00"
@@ -910,6 +947,64 @@ begin
 
    -- QNICE -> core: el acuse de vdrives. Un solo bit, nivel mantenido durante toda la
    -- transferencia, asi que xpm_cdc_single es exactamente la primitiva adecuada.
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4A: disquetera fisica interna del MEGA65
+   --
+   -- Todavia no lee datos: solo mueve el hierro (motor, seleccion, recalibrado a pista 0) y
+   -- detecta el pulso de indice, para confirmar que los 14 pines del interfaz Shugart y sus
+   -- polaridades son lo que creemos antes de escribir el separador MFM (fase B).
+   -- Ver .research/PORTING-PLAN.md seccion 11.
+   ----------------------------------------------------------------------------------------------
+
+   i_floppy_phys : entity work.floppy_phys
+      generic map (
+         G_CLK_HZ         => G_CLK_HZ
+      )
+      port map (
+         clk_i            => clk_main_i,
+         rst_i            => reset_hard_i,
+
+         enable_i         => floppy_enable_i,
+
+         busy_o           => floppy_busy_o,
+         ready_o          => floppy_ready_o,
+         error_o          => floppy_error_o,
+         index_pulse_o    => floppy_index_pulse,
+         disk_in_o        => floppy_disk_in_o,
+         write_prot_o     => open,
+         track_o          => open,
+
+         f_density_o      => f_density_o,
+         f_motora_o       => f_motora_o,
+         f_motorb_o       => f_motorb_o,
+         f_selecta_o      => f_selecta_o,
+         f_selectb_o      => f_selectb_o,
+         f_side1_o        => f_side1_o,
+         f_stepdir_o      => f_stepdir_o,
+         f_step_o         => f_step_o,
+         f_wdata_o        => f_wdata_o,
+         f_wgate_o        => f_wgate_o,
+         f_index_i        => f_index_i,
+         f_track0_i       => f_track0_i,
+         f_writeprotect_i => f_writeprotect_i,
+         f_diskchanged_i  => f_diskchanged_i,
+         f_rdata_i        => f_rdata_i
+      ); -- i_floppy_phys
+
+   -- Conmutador para hacer visible el indice en el LED (ver el comentario del puerto)
+   floppy_blink_proc : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if floppy_enable_i = '0' then
+            floppy_index_blink <= '0';
+         elsif floppy_index_pulse = '1' then
+            floppy_index_blink <= not floppy_index_blink;
+         end if;
+      end if;
+   end process floppy_blink_proc;
+
+   floppy_index_blink_o <= floppy_index_blink;
+
    i_cdc_sd_ack : xpm_cdc_single
       generic map (
          -- SRC_INPUT_REG=1: el ack que llega no es una salida de registro limpia, es el OR de
