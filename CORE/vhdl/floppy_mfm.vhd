@@ -2,9 +2,15 @@
 -- CPC4MEGA65 - Milestone 4, fase B: separador de datos MFM y lectura de campos de ID
 --
 -- Convierte el flujo magnetico crudo que sale de f_rdata_i en bytes, se sincroniza con las
--- marcas de direccion del formato IBM/CPC y valida los campos de ID con su CRC-16. Contar
--- cuantos sectores validos hay en una vuelta es la prueba de que TODA la cadena funciona: si
--- el CRC cuadra, la decodificacion es exacta bit a bit.
+-- marcas de direccion del formato IBM/CPC y lee los sectores completos: campo de ID y campo de
+-- datos, cada uno con su CRC-16. Si el CRC cuadra, la decodificacion es exacta bit a bit.
+--
+-- Un sector cuenta como leido solo si cuadran LOS DOS CRC (el del ID y el de los datos) y el ID
+-- era el inmediatamente anterior - si no, no se sabe a que sector pertenecen esos datos.
+--
+-- Los dos campos empiezan igual (A1 A1 A1 + byte de marca) y solo se distinguen por la marca:
+-- 0xFE = ID, 0xFB = datos, 0xF8 = datos marcados como borrados. Por eso hay un unico buscador
+-- de sincronismo y la bifurcacion se hace al leer la marca, en vez de dos maquinas separadas.
 --
 -- POR QUE ESTE FICHERO NO SE PARECE A NADA DE AExp, aunque AExp tenga disquetera completa:
 -- su motor de pista (adf_track_engine.vhd) trabaja a nivel de PALABRA - Paula le entrega y le
@@ -104,7 +110,9 @@ architecture beh of floppy_mfm is
 
    -- Marcas del formato IBM/CPC
    constant C_SYNC_CELLS : std_logic_vector(15 downto 0) := x"4489";
-   constant C_MARK_IDAM  : std_logic_vector(7 downto 0)  := x"FE";
+   constant C_MARK_IDAM  : std_logic_vector(7 downto 0)  := x"FE";   -- campo de ID
+   constant C_MARK_DAM   : std_logic_vector(7 downto 0)  := x"FB";   -- campo de datos
+   constant C_MARK_DDAM  : std_logic_vector(7 downto 0)  := x"F8";   -- datos marcados borrados
 
    ------------------------------------------------------------------------------------------
    -- Sincronizacion de f_rdata_i y medida de intervalos
@@ -154,6 +162,13 @@ architecture beh of floppy_mfm is
    constant C_REVS : natural := 3;
 
    signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0) := (others => '0');
+
+   -- Lectura del campo de DATOS que sigue a cada campo de ID.
+   -- id_ok recuerda si el ID inmediatamente anterior tenia el CRC bien: un campo de datos solo
+   -- se da por bueno si su ID tambien lo estaba, porque si no, no se sabe a que sector pertenece.
+   signal id_ok      : std_logic := '0';
+   signal id_r_lat   : std_logic_vector(7 downto 0) := (others => '0');
+   signal data_left  : unsigned(10 downto 0) := (others => '0');   -- hasta 1024 bytes
 
    ------------------------------------------------------------------------------------------
    -- CRC-16-CCITT (x^16+x^12+x^5+1), preset 0xFFFF - el del formato IBM
@@ -271,6 +286,8 @@ begin
             seen_index <= '0';
             bit_cnt    <= 0;
             field_idx  <= 0;
+            id_ok      <= '0';
+            data_left  <= (others => '0');
             rate_hd    <= '0';        -- se empieza probando DD, que es lo que usa el CPC
          else
 
@@ -347,10 +364,14 @@ begin
                      field_idx <= field_idx + 1;
 
                   when 2 =>
-                     -- Byte de marca. Solo interesan los campos de ID en esta fase; una marca
-                     -- de datos (0xFB) se ignora y se vuelve a buscar.
+                     -- Byte de marca: decide si lo que sigue es un campo de ID o uno de datos.
+                     -- Los dos empiezan igual (A1 A1 A1 + marca), asi que un solo buscador de
+                     -- sincronismo sirve para ambos y aqui se bifurca.
                      if byte_v = C_MARK_IDAM then
+                        id_ok     <= '0';       -- un ID nuevo invalida el anterior
                         field_idx <= 3;
+                     elsif byte_v = C_MARK_DAM or byte_v = C_MARK_DDAM then
+                        field_idx <= 10;
                      else
                         state <= ST_HUNT;
                      end if;
@@ -358,24 +379,52 @@ begin
                   when 3 => id_c <= byte_v; field_idx <= 4;
                   when 4 => id_h <= byte_v; field_idx <= 5;
                   when 5 => id_r <= byte_v; field_idx <= 6;
-                  when 6 => id_n <= byte_v; field_idx <= 7;
-                  when 7 => field_idx <= 8;                    -- CRC alto
+                  when 6 =>
+                     id_n <= byte_v;
+                     -- Tamano del sector = 128 << N. En el CPC N siempre es 2 (512 bytes); se
+                     -- aceptan 0..3 y cualquier otro valor se considera un ID corrupto.
+                     case byte_v(1 downto 0) is
+                        when "00"   => data_left <= to_unsigned(128, 11);
+                        when "01"   => data_left <= to_unsigned(256, 11);
+                        when "10"   => data_left <= to_unsigned(512, 11);
+                        when others => data_left <= to_unsigned(1024, 11);
+                     end case;
+                     if unsigned(byte_v) > 3 then
+                        state <= ST_HUNT;
+                     else
+                        field_idx <= 7;
+                     end if;
+                  when 7 => field_idx <= 8;                    -- CRC alto del ID
                   when 8 =>
                      -- Tras meter los dos bytes de CRC en el propio CRC, el resultado tiene que
                      -- ser cero. Es la comprobacion que demuestra que la decodificacion es
                      -- exacta bit a bit: un solo bit mal y esto no cuadra.
                      if f_crc16(crc, byte_v) = x"0000" then
-                        -- Cada sector suma UNA sola vez, la primera que se lee bien. Asi el
-                        -- recuento es "sectores distintos que tiene la pista" y no "lecturas
-                        -- correctas", que es lo que hace inmune la medida a la frontera de la
-                        -- ventana y a un fallo puntual de lectura.
-                        if seen_map(to_integer(unsigned(id_r(4 downto 0)))) = '0' then
-                           seen_map(to_integer(unsigned(id_r(4 downto 0)))) <= '1';
+                        id_ok    <= '1';
+                        id_r_lat <= id_r;
+                     end if;
+                     state <= ST_HUNT;        -- ahora toca el campo de datos de este sector
+
+                  -- Campo de datos: los N bytes utiles y despues su propio CRC
+                  when 10 =>
+                     if data_left = 1 then
+                        field_idx <= 11;
+                     else
+                        data_left <= data_left - 1;
+                     end if;
+                  when 11 => field_idx <= 12;                  -- CRC alto de los datos
+                  when 12 =>
+                     -- Un sector cuenta como LEIDO DE VERDAD solo si cuadran los dos CRC, el del
+                     -- ID y el de los datos, y ademas el ID era el inmediatamente anterior.
+                     if f_crc16(crc, byte_v) = x"0000" and id_ok = '1' then
+                        if seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) = '0' then
+                           seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) <= '1';
                            if sect_cnt /= "11111" then
                               sect_cnt <= sect_cnt + 1;
                            end if;
                         end if;
                      end if;
+                     id_ok <= '0';
                      state <= ST_HUNT;
 
                   when others =>
