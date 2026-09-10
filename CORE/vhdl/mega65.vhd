@@ -331,6 +331,18 @@ signal main_floppy_disk_in    : std_logic;
 signal floppy_led_on          : std_logic;
 signal floppy_led_col         : std_logic_vector(23 downto 0);
 
+-- CPC4MEGA65 M4B: recuento de sectores validos leidos de la pista 0
+signal main_floppy_mfm_done   : std_logic;
+signal main_floppy_sect_cnt   : std_logic_vector(4 downto 0);
+signal main_floppy_is_hd      : std_logic;
+
+-- Secuenciador que "dice" el recuento parpadeando (ver el comentario del LED)
+signal blink_div              : natural range 0 to 9_599_999 := 0;   -- 0,15 s a 64 MHz
+-- 8 bits: con 18 sectores (un 1,44 MB) la secuencia llega a 12 + 18*4 + 9 = 93 ranuras, que no
+-- cabe en 6 bits. Con 6 bits el contador daba la vuelta y la cuenta salia sin sentido.
+signal blink_slot             : unsigned(7 downto 0) := (others => '0');
+signal blink_on               : std_logic := '0';
+
 -- Lado "SD block/byte" main.vhd <-> vdrives (dominio de QNICE)
 signal qnice_sd_lba           : std_logic_vector(31 downto 0);
 signal qnice_sd_rd            : std_logic_vector(C_VDNUM - 1 downto 0);
@@ -481,6 +493,9 @@ begin
          floppy_error_o          => main_floppy_error,
          floppy_index_blink_o    => main_floppy_blink,
          floppy_disk_in_o        => main_floppy_disk_in,
+         floppy_mfm_done_o       => main_floppy_mfm_done,
+         floppy_sector_count_o   => main_floppy_sect_cnt,
+         floppy_is_hd_o          => main_floppy_is_hd,
 
          f_density_o             => f_density_o,
          f_motora_o              => f_motora_o,
@@ -759,9 +774,84 @@ begin
 
    main_floppy_enable <= main_osm_control_i(C_MENU_FLOPPY_TEST);
 
-   floppy_led_on  <= main_floppy_blink when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
+   ---------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4B: el LED "dice" el numero de sectores parpadeando
+   --
+   -- Un color solo distingue bien / mal, y aqui hace falta saber CUANTOS sectores se han
+   -- leido: 9 = perfecto, 3 = el separador funciona pero pierde sincronismo, 0 = no engancha
+   -- nada. Asi que cuando la vuelta termina, el LED da tantos destellos como sectores validos
+   -- ha encontrado, hace una pausa larga y repite. Se cuentan a simple vista.
+   --
+   -- 0,15 s por destello y 6 ranuras de pausa. El slot par enciende y el impar apaga, asi que
+   -- N sectores ocupan las ranuras 0..2N-1 y la pausa va de 2N a 2N+5.
+   ---------------------------------------------------------------------------------------
+
+   -- Va en main_clk, no en qnice_clk: el LED de la placa es dominio del core y las senales
+   -- main_floppy_* ya vienen de main.vhd en ese dominio. Usar el reloj de QNICE aqui habria
+   -- metido un cruce de dominio gratuito, que es justo el tipo de descuido que costo tres
+   -- builds en M2.
+   --
+   -- Estructura de la secuencia, en ranuras de 0,15 s:
+   --   0..5    (0,9 s)  destello LARGO = "empieza la cuenta"
+   --   6..11   (0,9 s)  apagado
+   --   12..    N destellos de 0,3 s encendido + 0,3 s apagado (4 ranuras cada uno)
+   --   ...     1,5 s apagado, y vuelta a empezar
+   -- La zona de destellos empieza en la ranura 12 a proposito: es multiplo de 4, asi que el
+   -- bit 1 del contador da directamente el encendido/apagado dentro de cada destello sin
+   -- tener que restar el desplazamiento.
+   --
+   -- La primera version usaba destellos de 0,15 s sin marca de inicio, y el usuario no pudo
+   -- distinguir 8 de 9 con seguridad. Una medida que no se puede leer sin dudar no sirve como
+   -- medida: de ahi el destello largo de referencia y el ritmo al doble de lento.
+   blink_proc : process (main_clk)
+      variable n_slots : unsigned(7 downto 0);
+   begin
+      if rising_edge(main_clk) then
+         -- 4 ranuras por destello: sect_cnt (5 bits) x 4 = 7 bits, mas un cero delante = 8
+         n_slots := ("0" & unsigned(main_floppy_sect_cnt) & "00");
+
+         if main_floppy_enable = '0' or main_floppy_mfm_done = '0' then
+            blink_div  <= 0;
+            blink_slot <= (others => '0');
+            blink_on   <= '0';
+         else
+            if blink_div = 9_599_999 then      -- 0,15 s a 64 MHz
+               blink_div <= 0;
+               if blink_slot = (12 + n_slots + 9) then
+                  blink_slot <= (others => '0');
+               else
+                  blink_slot <= blink_slot + 1;
+               end if;
+            else
+               blink_div <= blink_div + 1;
+            end if;
+
+            if blink_slot < 6 then
+               blink_on <= '1';                          -- marca de inicio
+            elsif blink_slot < 12 then
+               blink_on <= '0';
+            elsif blink_slot < (12 + n_slots) then
+               -- 2 ranuras encendido + 2 apagado por cada sector
+               blink_on <= not blink_slot(1);
+            else
+               blink_on <= '0';                          -- pausa final
+            end if;
+         end if;
+      end if;
+   end process blink_proc;
+
+   -- Antes de que termine la vuelta, el LED sigue diciendo el estado mecanico de M4A.
+   -- Cuando termina, pasa a "decir" el recuento: verde si ha encontrado algo, rojo fijo si no
+   -- ha enganchado ni un sector (ahi el separador o la densidad estan mal).
+   floppy_led_on  <= blink_on                     when main_floppy_mfm_done = '1' and main_floppy_sect_cnt /= "00000" else
+                     '1'                          when main_floppy_mfm_done = '1' else
+                     main_floppy_blink            when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
                      '1';
+   -- Cuando hay recuento, el COLOR dice ademas de que densidad es el disquete que se ha
+   -- conseguido leer: VERDE = DD (250 kbps, la del CPC), CIAN = HD (500 kbps).
    floppy_led_col <= x"FF0000" when main_floppy_error = '1' else
+                     x"00FFFF" when (main_floppy_mfm_done = '1' and main_floppy_is_hd = '1') else
+                     x"00FF00" when main_floppy_mfm_done = '1' else
                      x"FFFF00" when main_floppy_busy  = '1' else
                      x"00FF00";
 

@@ -87,6 +87,10 @@ entity main is
       -- dura un ciclo de 64MHz y no se veria.
       floppy_index_blink_o    : out std_logic;
       floppy_disk_in_o        : out std_logic;
+      -- M4B: resultado de leer una vuelta de la pista 0
+      floppy_mfm_done_o       : out std_logic;
+      floppy_sector_count_o   : out std_logic_vector(4 downto 0);
+      floppy_is_hd_o          : out std_logic;
 
       f_density_o             : out std_logic;
       f_motora_o              : out std_logic;
@@ -328,6 +332,7 @@ signal joy2_cpc   : std_logic_vector(6 downto 0);
 -- CPC4MEGA65 M4A: disquetera fisica
 signal floppy_index_pulse : std_logic;
 signal floppy_index_blink : std_logic := '0';
+signal floppy_ready       : std_logic;   -- se usa dentro (M4B) ademas de salir al LED
 
 -- rom_map: mapa de bancos de ROM alta que existen de verdad. La MMU lo usa para filtrar la
 -- seleccion de banco que hace el software: "ROMbank <= rom_map[D] ? D : 8'h00"
@@ -967,7 +972,7 @@ begin
          enable_i         => floppy_enable_i,
 
          busy_o           => floppy_busy_o,
-         ready_o          => floppy_ready_o,
+         ready_o          => floppy_ready,
          error_o          => floppy_error_o,
          index_pulse_o    => floppy_index_pulse,
          disk_in_o        => floppy_disk_in_o,
@@ -1004,6 +1009,37 @@ begin
    end process floppy_blink_proc;
 
    floppy_index_blink_o <= floppy_index_blink;
+   floppy_ready_o       <= floppy_ready;
+
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4B: separador de datos MFM y lectura de campos de ID
+   --
+   -- Cuenta cuantos sectores validos hay en una vuelta de la pista 0. Con formato DATA del CPC
+   -- deberian ser 9. Que el CRC cuadre es la prueba de que la decodificacion es exacta bit a
+   -- bit: un solo bit mal y el CRC no da cero.
+   ----------------------------------------------------------------------------------------------
+
+   i_floppy_mfm : entity work.floppy_mfm
+      generic map (
+         G_CLK_HZ       => G_CLK_HZ
+      )
+      port map (
+         clk_i          => clk_main_i,
+         rst_i          => reset_hard_i,
+
+         enable_i       => floppy_enable_i,
+         ready_i        => floppy_ready,
+         index_i        => floppy_index_pulse,
+         f_rdata_i      => f_rdata_i,
+
+         done_o         => floppy_mfm_done_o,
+         sector_count_o => floppy_sector_count_o,
+         is_hd_o        => floppy_is_hd_o,
+         id_track_o     => open,
+         id_side_o      => open,
+         id_sector_o    => open,
+         id_size_o      => open
+      ); -- i_floppy_mfm
 
    i_cdc_sd_ack : xpm_cdc_single
       generic map (

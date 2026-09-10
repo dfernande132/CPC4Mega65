@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4A - Build M4001\n\n" &
+   "Status: Milestone 4B - Build M4003\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -382,7 +382,7 @@ constant OPTM_ITEMS        : string :=
    " Drive B:%s\n"          &    -- 3   <- unidad 1 del u765
    "\n"                     &    -- 4
    " Swap joystick ports\n" &    -- 5   <- C_MENU_FLIP_JOYS
-   " Floppy: motor test\n"  &    -- 6   <- C_MENU_FLOPPY_TEST (M4A, ver mega65.vhd)
+   " Floppy: read test\n"   &    -- 6   <- C_MENU_FLOPPY_TEST (M4A/M4B, ver mega65.vhd)
    "\n"                     &    -- 7
    " HDMI: %s\n"            &    -- 8   submenu HDMI: inicio
    " HDMI Settings\n"       &    -- 9
