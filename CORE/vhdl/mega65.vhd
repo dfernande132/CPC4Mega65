@@ -335,6 +335,10 @@ signal floppy_led_col         : std_logic_vector(23 downto 0);
 signal main_floppy_mfm_done   : std_logic;
 signal main_floppy_sect_cnt   : std_logic_vector(4 downto 0);
 signal main_floppy_is_hd      : std_logic;
+signal main_floppy_scan_done  : std_logic;
+signal main_floppy_bad_trk    : std_logic_vector(4 downto 0);
+signal main_floppy_pos_code   : std_logic_vector(4 downto 0);
+signal blink_count            : std_logic_vector(4 downto 0);
 
 -- Secuenciador que "dice" el recuento parpadeando (ver el comentario del LED)
 signal blink_div              : natural range 0 to 9_599_999 := 0;   -- 0,15 s a 64 MHz
@@ -496,6 +500,9 @@ begin
          floppy_mfm_done_o       => main_floppy_mfm_done,
          floppy_sector_count_o   => main_floppy_sect_cnt,
          floppy_is_hd_o          => main_floppy_is_hd,
+         floppy_scan_done_o      => main_floppy_scan_done,
+         floppy_bad_tracks_o     => main_floppy_bad_trk,
+         floppy_pos_code_o       => main_floppy_pos_code,
 
          f_density_o             => f_density_o,
          f_motora_o              => f_motora_o,
@@ -803,12 +810,20 @@ begin
    -- La primera version usaba destellos de 0,15 s sin marca de inicio, y el usuario no pudo
    -- distinguir 8 de 9 con seguridad. Una medida que no se puede leer sin dudar no sirve como
    -- medida: de ahi el destello largo de referencia y el ritmo al doble de lento.
+   -- Que numero se "dice":
+   --   * durante el recorrido, los sectores de la pista que se acaba de leer
+   --   * al terminar CON FALLOS, el CODIGO DE POSICIONAMIENTO (1, 2 o 3), no el numero de
+   --     pistas malas. Contar 20 destellos no aporta nada que no supieramos ya; saber si la
+   --     cabeza esta donde creemos si. Ademas 1-3 se cuentan de un vistazo.
+   -- Si no hay fallos el LED se queda fijo y este numero no se usa.
+   blink_count <= main_floppy_pos_code when main_floppy_scan_done = '1' else main_floppy_sect_cnt;
+
    blink_proc : process (main_clk)
       variable n_slots : unsigned(7 downto 0);
    begin
       if rising_edge(main_clk) then
-         -- 4 ranuras por destello: sect_cnt (5 bits) x 4 = 7 bits, mas un cero delante = 8
-         n_slots := ("0" & unsigned(main_floppy_sect_cnt) & "00");
+         -- 4 ranuras por destello: la cuenta (5 bits) x 4 = 7 bits, mas un cero delante = 8
+         n_slots := ("0" & unsigned(blink_count) & "00");
 
          if main_floppy_enable = '0' or main_floppy_mfm_done = '0' then
             blink_div  <= 0;
@@ -843,13 +858,18 @@ begin
    -- Antes de que termine la vuelta, el LED sigue diciendo el estado mecanico de M4A.
    -- Cuando termina, pasa a "decir" el recuento: verde si ha encontrado algo, rojo fijo si no
    -- ha enganchado ni un sector (ahi el separador o la densidad estan mal).
-   floppy_led_on  <= blink_on                     when main_floppy_mfm_done = '1' and main_floppy_sect_cnt /= "00000" else
+   -- Recorrido terminado y sin pistas malas: LED fijo, que es la señal mas facil de reconocer
+   -- para el caso bueno. Con pistas malas, las cuenta parpadeando.
+   floppy_led_on  <= '1'                          when (main_floppy_scan_done = '1' and main_floppy_bad_trk = "00000") else
+                     blink_on                     when main_floppy_mfm_done = '1' and blink_count /= "00000" else
                      '1'                          when main_floppy_mfm_done = '1' else
                      main_floppy_blink            when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
                      '1';
    -- Cuando hay recuento, el COLOR dice ademas de que densidad es el disquete que se ha
    -- conseguido leer: VERDE = DD (250 kbps, la del CPC), CIAN = HD (500 kbps).
    floppy_led_col <= x"FF0000" when main_floppy_error = '1' else
+                     x"00FF00" when (main_floppy_scan_done = '1' and main_floppy_bad_trk = "00000") else
+                     x"FF0000" when main_floppy_scan_done = '1' else
                      x"00FFFF" when (main_floppy_mfm_done = '1' and main_floppy_is_hd = '1') else
                      x"00FF00" when main_floppy_mfm_done = '1' else
                      x"FFFF00" when main_floppy_busy  = '1' else

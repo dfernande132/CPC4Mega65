@@ -91,6 +91,10 @@ entity main is
       floppy_mfm_done_o       : out std_logic;
       floppy_sector_count_o   : out std_logic_vector(4 downto 0);
       floppy_is_hd_o          : out std_logic;
+      -- M4B2b-i: resultado del recorrido de las 40 pistas
+      floppy_scan_done_o      : out std_logic;
+      floppy_bad_tracks_o     : out std_logic_vector(4 downto 0);
+      floppy_pos_code_o       : out std_logic_vector(4 downto 0);
 
       f_density_o             : out std_logic;
       f_motora_o              : out std_logic;
@@ -333,6 +337,12 @@ signal joy2_cpc   : std_logic_vector(6 downto 0);
 signal floppy_index_pulse : std_logic;
 signal floppy_index_blink : std_logic := '0';
 signal floppy_ready       : std_logic;   -- se usa dentro (M4B) ademas de salir al LED
+signal floppy_seek_track  : std_logic_vector(6 downto 0);
+signal floppy_seek_start  : std_logic;
+signal floppy_mfm_restart : std_logic;
+signal floppy_mfm_done    : std_logic;
+signal floppy_sect_cnt    : std_logic_vector(4 downto 0);
+signal floppy_id_track    : std_logic_vector(7 downto 0);
 
 -- rom_map: mapa de bancos de ROM alta que existen de verdad. La MMU lo usa para filtrar la
 -- seleccion de banco que hace el software: "ROMbank <= rom_map[D] ? D : 8'h00"
@@ -970,6 +980,8 @@ begin
          rst_i            => reset_hard_i,
 
          enable_i         => floppy_enable_i,
+         seek_track_i     => floppy_seek_track,
+         seek_start_i     => floppy_seek_start,
 
          busy_o           => floppy_busy_o,
          ready_o          => floppy_ready,
@@ -1030,16 +1042,55 @@ begin
          enable_i       => floppy_enable_i,
          ready_i        => floppy_ready,
          index_i        => floppy_index_pulse,
+         restart_i      => floppy_mfm_restart,
          f_rdata_i      => f_rdata_i,
 
-         done_o         => floppy_mfm_done_o,
-         sector_count_o => floppy_sector_count_o,
+         done_o         => floppy_mfm_done,
+         sector_count_o => floppy_sect_cnt,
          is_hd_o        => floppy_is_hd_o,
-         id_track_o     => open,
+         id_track_o     => floppy_id_track,
          id_side_o      => open,
          id_sector_o    => open,
          id_size_o      => open
       ); -- i_floppy_mfm
+
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4B2b-i: recorrido del disco entero
+   --
+   -- Encadena la mecanica y la lectura para comprobar que las 40 pistas se leen igual de bien
+   -- que la pista 0. Valida la ultima pieza de hardware sin probar: la busqueda de pista.
+   ----------------------------------------------------------------------------------------------
+
+   i_floppy_scan : entity work.floppy_scan
+      generic map (
+         G_TRACKS      => 40         -- formato DATA del CPC: 40 pistas de una cara
+      )
+      port map (
+         clk_i         => clk_main_i,
+         rst_i         => reset_hard_i,
+
+         enable_i      => floppy_enable_i,
+
+         phys_ready_i  => floppy_ready,
+         phys_error_i  => floppy_error_o,
+         seek_track_o  => floppy_seek_track,
+         seek_start_o  => floppy_seek_start,
+
+         mfm_restart_o  => floppy_mfm_restart,
+         mfm_done_i     => floppy_mfm_done,
+         mfm_count_i    => floppy_sect_cnt,
+         mfm_id_track_i => floppy_id_track,
+
+         scan_done_o   => floppy_scan_done_o,
+         bad_tracks_o  => floppy_bad_tracks_o,
+         sect_ref_o    => floppy_sector_count_o,
+         cur_track_o   => open,
+         pos_code_o    => floppy_pos_code_o
+      ); -- i_floppy_scan
+
+   -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,
+   -- lo que interesa es el resultado global (ver mega65.vhd).
+   floppy_mfm_done_o <= floppy_mfm_done;
 
    i_cdc_sd_ack : xpm_cdc_single
       generic map (

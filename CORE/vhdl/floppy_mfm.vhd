@@ -51,6 +51,10 @@ entity floppy_mfm is
       enable_i       : in  std_logic;
       ready_i        : in  std_logic;                     -- floppy_phys.ready_o
       index_i        : in  std_logic;                     -- pulso de indice, 1 ciclo
+      -- Pulso para empezar a contar una pista NUEVA desde cero. Lo usa floppy_scan al cambiar
+      -- de pista. Ojo: NO reinicia la densidad detectada - averiguarla otra vez en cada pista
+      -- costaria una vuelta perdida por pista, y la densidad es del disquete, no de la pista.
+      restart_i      : in  std_logic;
 
       -- Flujo magnetico crudo (activo bajo, sin sincronizar)
       f_rdata_i      : in  std_logic;
@@ -289,6 +293,16 @@ begin
             id_ok      <= '0';
             data_left  <= (others => '0');
             rate_hd    <= '0';        -- se empieza probando DD, que es lo que usa el CPC
+         elsif restart_i = '1' then
+            state      <= ST_IDLE;
+            seen_map   <= (others => '0');
+            sect_cnt   <= (others => '0');
+            rev_cnt    <= 0;
+            done_r     <= '0';
+            seen_index <= '0';
+            bit_cnt    <= 0;
+            field_idx  <= 0;
+            id_ok      <= '0';
          else
 
             -- El recuento se hace sobre UNA vuelta completa: se arranca en un pulso de indice

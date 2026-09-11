@@ -115,6 +115,7 @@ set_property file_type SystemVerilog [get_files "$core_cpc_dir/rtl/u765/u765.sv"
 add_files -norecurse -fileset sources_1 [list \
     "E:/CPC4MEGA65/core/CORE/vhdl/floppy_phys.vhd" \
     "E:/CPC4MEGA65/core/CORE/vhdl/floppy_mfm.vhd" \
+    "E:/CPC4MEGA65/core/CORE/vhdl/floppy_scan.vhd" \
 ]
 
 # CPC4MEGA65: si el log de sintesis da mas casos de [Synth 8-10632]/[Synth 8-1873]/

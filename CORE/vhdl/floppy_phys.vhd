@@ -34,6 +34,11 @@ entity floppy_phys is
 
       -- Control
       enable_i       : in  std_logic;                     -- '1' = encender motor y recalibrar
+      -- Busqueda de pista: se pulsa seek_start_i con la pista deseada en seek_track_i. Solo se
+      -- acepta con ready_o a '1' (o sea, ya recalibrado), porque hasta entonces no se sabe
+      -- donde esta la cabeza.
+      seek_track_i   : in  std_logic_vector(6 downto 0);
+      seek_start_i   : in  std_logic;
 
       -- Estado (dominio del core)
       busy_o         : out std_logic;                     -- girando/buscando, aun sin resultado
@@ -103,12 +108,14 @@ architecture beh of floppy_phys is
    constant C_DENSITY_DD : std_logic := '1';
 
    type t_state is (S_IDLE, S_SPINUP, S_RECAL_CHK, S_STEP_PULSE, S_STEP_WAIT,
-                    S_SETTLE, S_READY, S_ERROR);
+                    S_SETTLE, S_READY, S_ERROR,
+                    S_SEEK_CHK, S_SEEK_PULSE, S_SEEK_WAIT, S_SEEK_SETTLE);
    signal state      : t_state := S_IDLE;
 
    signal timer      : natural range 0 to C_SPINUP_CYC := 0;
    signal step_cnt   : natural range 0 to C_RECAL_MAX  := 0;
    signal track      : unsigned(6 downto 0) := (others => '0');
+   signal seek_dest  : unsigned(6 downto 0) := (others => '0');
 
    -- Sincronizacion de las entradas asincronas que vienen del cable de la disquetera.
    -- No es opcional: son señales de un periferico externo sin ninguna relacion de fase con
@@ -248,6 +255,60 @@ begin
                when S_READY =>
                   if enable_i = '0' then
                      state <= S_IDLE;
+                  elsif seek_start_i = '1' then
+                     seek_dest <= unsigned(seek_track_i);
+                     state     <= S_SEEK_CHK;
+                  end if;
+
+               -- Busqueda: se dan pasos de uno en uno hasta llegar a la pista pedida. La
+               -- direccion se decide en cada paso comparando con el destino, no de una vez,
+               -- para que el contador de pista y el movimiento real no puedan desincronizarse.
+               when S_SEEK_CHK =>
+                  if enable_i = '0' then
+                     state <= S_IDLE;
+                  elsif track = seek_dest then
+                     timer <= C_SETTLE_CYC - 1;
+                     state <= S_SEEK_SETTLE;
+                  elsif track0_sr(2) = C_ACTIVE and seek_dest = 0 then
+                     -- Ya en el tope exterior: la pista 0 fisica manda sobre el contador
+                     track <= (others => '0');
+                     timer <= C_SETTLE_CYC - 1;
+                     state <= S_SEEK_SETTLE;
+                  else
+                     if track < seek_dest then
+                        dir_n <= C_DIR_IN;
+                        track <= track + 1;
+                     else
+                        dir_n <= C_DIR_OUT;
+                        track <= track - 1;
+                     end if;
+                     timer <= C_STEP_CYC - 1;
+                     state <= S_SEEK_PULSE;
+                  end if;
+
+               when S_SEEK_PULSE =>
+                  step_n <= C_ACTIVE;
+                  if timer = 0 then
+                     timer <= C_STEPRATE_CYC - 1;
+                     state <= S_SEEK_WAIT;
+                  else
+                     timer <= timer - 1;
+                  end if;
+
+               when S_SEEK_WAIT =>
+                  if timer = 0 then
+                     state <= S_SEEK_CHK;
+                  else
+                     timer <= timer - 1;
+                  end if;
+
+               when S_SEEK_SETTLE =>
+                  if enable_i = '0' then
+                     state <= S_IDLE;
+                  elsif timer = 0 then
+                     state <= S_READY;
+                  else
+                     timer <= timer - 1;
                   end if;
 
                when S_ERROR =>
@@ -263,7 +324,11 @@ begin
    end process fsm_proc;
 
    busy_o  <= '1' when (state = S_SPINUP or state = S_RECAL_CHK or state = S_STEP_PULSE or
-                        state = S_STEP_WAIT or state = S_SETTLE) else '0';
+                        state = S_STEP_WAIT or state = S_SETTLE or state = S_SEEK_CHK or
+                        state = S_SEEK_PULSE or state = S_SEEK_WAIT or
+                        state = S_SEEK_SETTLE) else '0';
+   -- ready_o solo en S_READY: durante una busqueda vale '0', que es lo que usa el orquestador
+   -- para saber cuando la cabeza ya esta colocada.
    ready_o <= '1' when state = S_READY else '0';
    error_o <= '1' when state = S_ERROR else '0';
 
