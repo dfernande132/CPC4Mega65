@@ -103,6 +103,9 @@ entity main is
       -- M4014: a que unidad va la disquetera fisica ('0' = A:, '1' = B:). Hace falta aqui
       -- para saber en cual de las dos hay que volver a disparar el montaje al terminar.
       floppy_tgt_b_i          : in  std_logic;
+      -- M4018 (MEDIDA, temporal): retardo artificial del acuse que ve el u765.
+      -- 00 = sin retardo, 01 = 100 ms, 10 = 400 ms, 11 = 1 s.
+      sd_slow_i               : in  std_logic_vector(1 downto 0);
       -- M4C1: formateo de pista. floppy_fmt_enable_i es el permiso Y el disparo.
       floppy_fmt_enable_i     : in  std_logic;
       floppy_density_i        : in  std_logic;
@@ -443,7 +446,58 @@ signal floppy_dsk_start   : std_logic;
 -- caso la via segura es montar una imagen DATA estandar de 194.816 bytes como destino.
 signal floppy_scan_done   : std_logic;
 
+-- M4019: senales internas para poder ALIMENTAR LA TELEMETRIA ademas de sacarlas por sus
+-- puertos. Antes iban directas al puerto de salida y no habia forma de leerlas aqui.
+signal floppy_bad_trk     : std_logic_vector(4 downto 0);
+signal floppy_pos_code    : std_logic_vector(4 downto 0);
+signal floppy_id_cpc      : std_logic;
+signal floppy_is_hd       : std_logic;
+signal floppy_tlm_seen    : std_logic_vector(31 downto 0);
+signal floppy_tlm_revs    : std_logic_vector(3 downto 0);
+signal floppy_tlm_idcrc   : std_logic_vector(15 downto 0);
+signal floppy_tlm_dtcrc   : std_logic_vector(15 downto 0);
+signal floppy_tlm_flags   : std_logic_vector(7 downto 0);
+
+-- M4020: VOLCADO AUTONOMO A LA SD.
+--
+-- El problema practico: para que el Shell escriba la imagen a la tarjeta hace falta que la
+-- cache este SUCIA, y eso solo ocurria cuando el CPC escribia algo. Pero escribir desde el
+-- CPC funciona ANTES de leer el disquete fisico y falla DESPUES (medido en hardware), asi que
+-- justo en el caso que queremos volcar no habia forma de disparar el volcado.
+--
+-- La salida: al terminar el recorrido, el propio core pide UNA escritura a vdrives. El
+-- firmware la atiende (HANDLE_DRV_WR), marca la cache sucia, y 2 s despues FLUSH_CACHE vuelca
+-- los 194.816 bytes enteros al fichero .dsk montado.
+--
+-- Y no estropea nada, que es lo bonito: el buffer de montaje son 256 KB (mega65.vhd,
+-- ADDR_WIDTH=18) y la imagen ocupa 194.816, asi que sobran 67.328 bytes al final. La peticion
+-- apunta al bloque 400 = byte 204.800, muy por encima de la imagen. El firmware copiara ahi
+-- 512 bytes del buffer interno del u765, en una zona que NADIE lee y que FLUSH_CACHE nunca
+-- escribe a la tarjeta, porque solo vuelca el tamano del fichero.
+constant C_DUMP_LBA       : natural := 400;          -- byte 204.800, fuera de la imagen
+signal dump_sd_wr         : std_logic_vector(1 downto 0) := "00";
+signal dump_sd_lba        : std_logic_vector(31 downto 0);
+signal dump_req           : std_logic := '0';
+signal dump_done          : std_logic := '0';
+signal dump_scan_d        : std_logic := '0';
+constant C_DUMP_TMO       : natural := 6_400_000;    -- 100 ms de guarda
+signal dump_tmo           : natural range 0 to C_DUMP_TMO := 0;
+
+-- M4018 (MEDIDA, temporal). La pregunta que decide si M4D es viable: leer una pista bajo
+-- demanda cuesta unos 400 ms con la busqueda, y el propio shell.asm avisa de que "some cores
+-- are very strict when it comes to the intervals between sd_rd_i and sd_ack_o". Si la cadena
+-- no aguanta esa latencia, el diseño por pistas bajo demanda no se sostiene y hay que saberlo
+-- ANTES de escribir el traductor de bloques.
+--
+-- Se retrasa la SUBIDA del acuse que ve el u765 (sd_ack_sys), no el del lado QNICE: ese sigue
+-- gobernando el puerto A de los buffers y no se toca. El efecto es exactamente el de un bloque
+-- que tarda en llegar. Los datos ya estan en el buffer cuando soltamos el acuse, asi que lo
+-- unico que se mide es la TOLERANCIA A LA ESPERA, que es justo lo que se quiere saber.
+signal sd_ack_dly         : std_logic := '0';
+signal sd_ack_cnt         : natural range 0 to 64_000_000 := 0;
+
 signal floppy_track_done  : std_logic;
+signal floppy_done_track  : std_logic_vector(6 downto 0);   -- M4021
 signal floppy_cur_track   : std_logic_vector(6 downto 0);
 signal floppy_wprot       : std_logic;
 -- Recorrido de pistas: solo con la lectura, nunca durante un formateo (ver i_floppy_scan)
@@ -928,7 +982,78 @@ begin
       end if;
    end process;
 
-   floppy_scan_done_o <= floppy_scan_done;
+   floppy_scan_done_o  <= floppy_scan_done;
+
+   -- M4019: los puertos se alimentan de las senales internas (ver la declaracion).
+   floppy_is_hd_o      <= floppy_is_hd;
+   floppy_bad_tracks_o <= floppy_bad_trk;
+   floppy_pos_code_o   <= floppy_pos_code;
+   floppy_id_is_cpc_o  <= floppy_id_cpc;
+
+   floppy_tlm_flags <= "0000" & floppy_scan_done & floppy_density_i &
+                       floppy_is_hd & floppy_id_cpc;
+
+   -- M4020: ver el comentario largo en las declaraciones.
+   --
+   -- La peticion se mantiene hasta el acuse, que es el protocolo de vdrives (nivel sostenido,
+   -- no pulso), y se hace UNA sola vez por recorrido: dump_done lo impide hasta el siguiente
+   -- start. Va a la unidad que sea destino de la disquetera fisica, que es la que tiene la
+   -- imagen que queremos volcar.
+   dump_sd_lba <= std_logic_vector(to_unsigned(C_DUMP_LBA, 32)) when dump_req = '1'
+                  else u765_sd_lba;
+   dump_sd_wr(0) <= u765_sd_wr(0) or (dump_req and not floppy_tgt_b_i);
+   dump_sd_wr(1) <= u765_sd_wr(1) or (dump_req and     floppy_tgt_b_i);
+
+   dump_proc : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         dump_scan_d <= floppy_scan_done;
+
+         if floppy_dsk_start = '1' then
+            dump_done <= '0';                    -- recorrido nuevo, volcado nuevo
+            dump_req  <= '0';
+            dump_tmo  <= 0;
+         elsif floppy_scan_done = '1' and dump_scan_d = '0' and dump_done = '0' then
+            dump_req  <= '1';
+            dump_done <= '1';
+            dump_tmo  <= C_DUMP_TMO;
+         elsif dump_req = '1' then
+            if main_sd_ack = '1' then
+               dump_req <= '0';                  -- atendida: soltar el nivel
+            elsif dump_tmo /= 0 then
+               dump_tmo <= dump_tmo - 1;
+            else
+               -- Tiempo de guarda: si el firmware no atendiera la peticion, el nivel NO se
+               -- puede quedar colgado - sd_wr alto indefinidamente bloquearia la unidad.
+               dump_req <= '0';
+            end if;
+         end if;
+      end if;
+   end process dump_proc;
+
+   -- M4018 (MEDIDA, temporal): ver el comentario en la zona de declaraciones.
+   sd_ack_delay_proc : process (clk_main_i)
+      variable target_v : natural range 0 to 64_000_000;
+   begin
+      if rising_edge(clk_main_i) then
+         case sd_slow_i is
+            when "01"   => target_v :=  6_400_000;   -- 100 ms a 64 MHz
+            when "10"   => target_v := 25_600_000;   -- 400 ms, el coste real de una pista
+            when "11"   => target_v := 64_000_000;   -- 1 s
+            when others => target_v := 0;
+         end case;
+
+         if main_sd_ack = '0' then
+            sd_ack_cnt <= target_v;
+            sd_ack_dly <= '0';
+         elsif sd_ack_cnt /= 0 then
+            sd_ack_cnt <= sd_ack_cnt - 1;
+            sd_ack_dly <= '0';
+         else
+            sd_ack_dly <= '1';
+         end if;
+      end if;
+   end process sd_ack_delay_proc;
 
    -- "Hay disco dentro": se muestrea el tamano de la imagen en el flanco de montaje
    -- (Amstrad.sv:748-750). img_size = 0 significa "expulsar", no "imagen vacia".
@@ -1033,7 +1158,7 @@ begin
          -- (WNS -4.98 ns, primera build de M2). Con el XPM delante pasa a ser main_clk ->
          -- main_clk y hace lo que siempre hizo: filtrar flancos.
          sd_ack       => qnice_sd_ack_i,
-         sd_ack_sys   => main_sd_ack,
+         sd_ack_sys   => sd_ack_dly,
 
          -- Lado "SD byte": dominio de QNICE de punta a punta gracias al clk_sd de arriba
          sd_buff_addr => qnice_sd_buff_addr_i,
@@ -1073,8 +1198,8 @@ begin
       port map (
          src_clk               => clk_main_i,
          src_in(1 downto 0)    => u765_sd_rd,
-         src_in(3 downto 2)    => u765_sd_wr,
-         src_in(35 downto 4)   => u765_sd_lba,
+         src_in(3 downto 2)    => dump_sd_wr,
+         src_in(35 downto 4)   => dump_sd_lba,
          src_in(38 downto 36)  => u765_sd_sel,
          dest_clk              => qnice_clk_i,
          dest_out(1 downto 0)  => qnice_sd_rd_o,
@@ -1174,7 +1299,7 @@ begin
 
          done_o         => floppy_mfm_done,
          sector_count_o => floppy_sect_cnt,
-         is_hd_o        => floppy_is_hd_o,
+         is_hd_o        => floppy_is_hd,
          id_track_o     => floppy_id_track,
          id_side_o      => floppy_id_side,
          id_sector_o    => floppy_id_sector,
@@ -1184,7 +1309,12 @@ begin
          data_valid_o   => floppy_data_valid,
          data_offset_o  => floppy_data_offset,
          sec_slot_o     => floppy_sec_slot,
-         sec_ok_o       => floppy_sec_ok
+         sec_ok_o       => floppy_sec_ok,
+
+         tlm_seen_o     => floppy_tlm_seen,
+         tlm_revs_o     => floppy_tlm_revs,
+         tlm_idcrc_o    => floppy_tlm_idcrc,
+         tlm_dtcrc_o    => floppy_tlm_dtcrc
       ); -- i_floppy_mfm
 
    ----------------------------------------------------------------------------------------------
@@ -1192,6 +1322,9 @@ begin
    ----------------------------------------------------------------------------------------------
 
    i_floppy_dsk : entity work.floppy_dsk
+      generic map (
+         G_CLK_HZ      => G_CLK_HZ
+      )
       port map (
          clk_i         => clk_main_i,
          rst_i         => reset_hard_i,
@@ -1199,6 +1332,7 @@ begin
          start_i       => floppy_dsk_start,
          track_i       => floppy_cur_track,
          track_done_i  => floppy_track_done,
+         done_track_i  => floppy_done_track,
          sect_count_i  => floppy_sect_cnt,
 
          data_byte_i   => floppy_data_byte,
@@ -1217,7 +1351,17 @@ begin
 
          img_size_o    => open,
          busy_o        => open,
-         wr_code_o     => floppy_wr_code_o
+         wr_code_o     => floppy_wr_code_o,
+
+         -- M4019 telemetria
+         finish_i      => floppy_scan_done,
+         tlm_seen_i    => floppy_tlm_seen,
+         tlm_revs_i    => floppy_tlm_revs,
+         tlm_idcrc_i   => floppy_tlm_idcrc,
+         tlm_dtcrc_i   => floppy_tlm_dtcrc,
+         tlm_badtrk_i  => floppy_bad_trk,
+         tlm_poscode_i => floppy_pos_code,
+         tlm_flags_i   => floppy_tlm_flags
       ); -- i_floppy_dsk
 
    ----------------------------------------------------------------------------------------------
@@ -1254,13 +1398,14 @@ begin
          mfm_id_sector_i => floppy_id_sector,
 
          scan_done_o   => floppy_scan_done,
-         bad_tracks_o  => floppy_bad_tracks_o,
+         bad_tracks_o  => floppy_bad_trk,
          sect_ref_o    => floppy_sector_count_o,
          cur_track_o   => floppy_cur_track,
          dsk_start_o   => floppy_dsk_start,
          track_done_o  => floppy_track_done,
-         pos_code_o    => floppy_pos_code_o,
-         id_is_cpc_o   => floppy_id_is_cpc_o
+         done_track_o  => floppy_done_track,
+         pos_code_o    => floppy_pos_code,
+         id_is_cpc_o   => floppy_id_cpc
       ); -- i_floppy_scan
 
    ----------------------------------------------------------------------------------------------

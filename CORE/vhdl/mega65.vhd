@@ -275,12 +275,17 @@ constant C_MENU_FLOPPY_B       : natural := 7;
 constant C_MENU_FLOPPY_TEST    : natural := 8;
 constant C_MENU_FLOPPY_FMT     : natural := 9;
 constant C_MENU_FLOPPY_DENS    : natural := 10;
-constant C_MENU_HDMI_16_9_50   : natural := 15;
-constant C_MENU_HDMI_4_3_50    : natural := 16;
-constant C_MENU_HDMI_5_4_50    : natural := 17;
-constant C_MENU_CRT_EMULATION  : natural := 21;
-constant C_MENU_HDMI_ZOOM      : natural := 22;
-constant C_MENU_IMPROVE_AUDIO  : natural := 23;
+-- CPC4MEGA65 (M4018): +4 por las cuatro lineas de "Slow block", que son de MEDIDA y se
+-- quitaran. La linea 11 es "off" y no necesita constante (es el OPTM_G_STDSEL del grupo).
+constant C_MENU_SLOW_100       : natural := 12;
+constant C_MENU_SLOW_400       : natural := 13;
+constant C_MENU_SLOW_1S        : natural := 14;
+constant C_MENU_HDMI_16_9_50   : natural := 19;
+constant C_MENU_HDMI_4_3_50    : natural := 20;
+constant C_MENU_HDMI_5_4_50    : natural := 21;
+constant C_MENU_CRT_EMULATION  : natural := 25;
+constant C_MENU_HDMI_ZOOM      : natural := 26;
+constant C_MENU_IMPROVE_AUDIO  : natural := 27;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -347,6 +352,7 @@ signal main_floppy_buf_addr   : std_logic_vector(17 downto 0);
 signal main_floppy_buf_data   : std_logic_vector(7 downto 0);
 signal main_floppy_buf_we     : std_logic;
 signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
+signal main_sd_slow           : std_logic_vector(1 downto 0);   -- M4018: medida de latencia
 signal floppy_we_a            : std_logic;
 signal floppy_we_b            : std_logic;
 
@@ -530,6 +536,7 @@ begin
          floppy_buf_data_o       => main_floppy_buf_data,
          floppy_buf_we_o         => main_floppy_buf_we,
          floppy_tgt_b_i          => main_floppy_tgt_b,
+         sd_slow_i               => main_sd_slow,
          floppy_fmt_enable_i     => main_floppy_fmt_en,
          floppy_density_i        => main_floppy_density,
          floppy_fmt_busy_o       => main_floppy_fmt_busy,
@@ -741,6 +748,13 @@ begin
    --
    -- Solo escribe la unidad seleccionada en el menu: hay una disquetera fisica, no dos.
    main_floppy_tgt_b <= main_osm_control_i(C_MENU_FLOPPY_B);
+
+   -- M4018 (MEDIDA, temporal): nivel de retardo artificial del acuse. Grupo de radio, asi que
+   -- como mucho uno de los tres esta activo; si no hay ninguno, "off".
+   main_sd_slow <= "11" when main_osm_control_i(C_MENU_SLOW_1S)  = '1' else
+                   "10" when main_osm_control_i(C_MENU_SLOW_400) = '1' else
+                   "01" when main_osm_control_i(C_MENU_SLOW_100) = '1' else
+                   "00";
    floppy_we_a       <= main_floppy_buf_we and not main_floppy_tgt_b;
    floppy_we_b       <= main_floppy_buf_we and     main_floppy_tgt_b;
 

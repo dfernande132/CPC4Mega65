@@ -81,7 +81,15 @@ entity floppy_mfm is
       -- CPC &C1..&C9 dan los dos 1..9, o sea ranuras 0..8.
       sec_slot_o     : out std_logic_vector(4 downto 0);
       -- Pulso al terminar un sector con los DOS CRC correctos: su contenido ya es definitivo
-      sec_ok_o       : out std_logic
+      sec_ok_o       : out std_logic;
+
+      -- M4019 TELEMETRIA. Lo que no sabiamos y nos ha costado tres builds de adivinar:
+      -- cuantos CRC fallan y de que tipo, que sectores concretos faltan, y cuantas vueltas
+      -- ha hecho falta dar. Todo por pista, y se reinicia con restart_i.
+      tlm_seen_o     : out std_logic_vector(31 downto 0); -- que IDs se han visto (bit = ID and 31)
+      tlm_revs_o     : out std_logic_vector(3 downto 0);  -- vueltas consumidas en esta pista
+      tlm_idcrc_o    : out std_logic_vector(15 downto 0); -- campos de ID con CRC malo
+      tlm_dtcrc_o    : out std_logic_vector(15 downto 0)  -- campos de DATOS con CRC malo
    );
 end floppy_mfm;
 
@@ -196,6 +204,10 @@ architecture beh of floppy_mfm is
    signal data_byte  : std_logic_vector(7 downto 0) := (others => '0');
    signal data_off_r : unsigned(10 downto 0) := (others => '0');
    signal data_vld   : std_logic := '0';
+
+   -- M4019: contadores de telemetria por pista
+   signal idcrc_err  : unsigned(15 downto 0) := (others => '0');
+   signal dtcrc_err  : unsigned(15 downto 0) := (others => '0');
    signal sec_ok_r   : std_logic := '0';
 
    ------------------------------------------------------------------------------------------
@@ -229,6 +241,12 @@ begin
 
    data_byte_o   <= data_byte;
    data_valid_o  <= data_vld;
+
+   -- M4019: telemetria
+   tlm_seen_o    <= seen_map;
+   tlm_revs_o    <= std_logic_vector(to_unsigned(rev_cnt, 4));
+   tlm_idcrc_o   <= std_logic_vector(idcrc_err);
+   tlm_dtcrc_o   <= std_logic_vector(dtcrc_err);
    data_offset_o <= std_logic_vector(data_off_r);
    -- Ranura = los 4 bits bajos del identificador menos 1 (sectores 1..9 -> ranuras 0..8)
    sec_slot_o    <= std_logic_vector(resize(unsigned(id_r_lat(3 downto 0)) - 1, 5));
@@ -325,6 +343,8 @@ begin
             field_idx  <= 0;
             id_ok      <= '0';
             data_pos   <= (others => '0');
+            idcrc_err  <= (others => '0');   -- M4019
+            dtcrc_err  <= (others => '0');   -- M4019
             rate_hd    <= '0';        -- se empieza probando DD, que es lo que usa el CPC
          elsif restart_i = '1' then
             state      <= ST_IDLE;
@@ -336,6 +356,8 @@ begin
             bit_cnt    <= 0;
             field_idx  <= 0;
             id_ok      <= '0';
+            idcrc_err  <= (others => '0');   -- M4019: la telemetria es POR PISTA
+            dtcrc_err  <= (others => '0');   -- M4019
          else
 
             -- El recuento se hace sobre UNA vuelta completa: se arranca en un pulso de indice
@@ -456,6 +478,8 @@ begin
                      if f_crc16(crc, byte_v) = x"0000" then
                         id_ok    <= '1';
                         id_r_lat <= id_r;
+                     elsif idcrc_err /= x"FFFF" then
+                        idcrc_err <= idcrc_err + 1;     -- M4019
                      end if;
                      state <= ST_HUNT;        -- ahora toca el campo de datos de este sector
 
@@ -507,15 +531,19 @@ begin
                   when 12 =>
                      -- Un sector cuenta como LEIDO DE VERDAD solo si cuadran los dos CRC, el del
                      -- ID y el de los datos, y ademas el ID era el inmediatamente anterior.
-                     if f_crc16(crc, byte_v) = x"0000" and id_ok = '1' then
-                        sec_ok_r <= '1';        -- el contenido de este sector ya es definitivo
-                        if seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) = '0' then
-                           seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) <= '1';
-                           new_in_rev <= '1';
-                           if sect_cnt /= "11111" then
-                              sect_cnt <= sect_cnt + 1;
+                     if f_crc16(crc, byte_v) = x"0000" then
+                        if id_ok = '1' then
+                           sec_ok_r <= '1';     -- el contenido de este sector ya es definitivo
+                           if seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) = '0' then
+                              seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) <= '1';
+                              new_in_rev <= '1';
+                              if sect_cnt /= "11111" then
+                                 sect_cnt <= sect_cnt + 1;
+                              end if;
                            end if;
                         end if;
+                     elsif dtcrc_err /= x"FFFF" then
+                        dtcrc_err <= dtcrc_err + 1;     -- M4019
                      end if;
                      id_ok <= '0';
                      state <= ST_HUNT;

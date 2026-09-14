@@ -34,7 +34,8 @@ entity floppy_dsk is
    generic (
       G_TRACKS       : natural := 40;
       G_SECTORS      : natural := 9;       -- por pista, en formato DATA del CPC
-      G_SECSIZE      : natural := 512
+      G_SECSIZE      : natural := 512;
+      G_CLK_HZ       : natural := 64_000_000   -- M4019: para el contador de milisegundos
    );
    port (
       clk_i          : in  std_logic;
@@ -42,8 +43,13 @@ entity floppy_dsk is
 
       -- Control desde floppy_scan
       start_i        : in  std_logic;                     -- pulso: empieza una imagen nueva
-      track_i        : in  std_logic_vector(6 downto 0);  -- pista que se esta leyendo
+      track_i        : in  std_logic_vector(6 downto 0);  -- pista que se esta leyendo AHORA
       track_done_i   : in  std_logic;                     -- pulso: pista terminada
+      -- M4021: la pista a la que corresponde ese pulso. NO es track_i: cuando el pulso llega,
+      -- el contador de floppy_scan ya se ha incrementado en el mismo flanco. Usar track_i aqui
+      -- escribia cada cabecera en la ranura de la pista SIGUIENTE, dejaba la pista 0 sin
+      -- cabecera y tiraba la de la 39 fuera de la imagen.
+      done_track_i   : in  std_logic_vector(6 downto 0);
       sect_count_i   : in  std_logic_vector(4 downto 0);  -- sectores validos de esa pista
 
       -- Flujo de datos desde floppy_mfm
@@ -65,6 +71,23 @@ entity floppy_dsk is
       -- Tamano final de la imagen, para anunciarla al montarla
       img_size_o     : out std_logic_vector(31 downto 0);
       busy_o         : out std_logic;
+
+      -- M4019 TELEMETRIA. Se escribe DENTRO de las zonas no usadas de las cabeceras del
+      -- propio .DSK, asi que el volcado a la SD sirve a la vez de diagnostico y de imagen
+      -- verificable, y la imagen sigue siendo un .DSK valido que el u765 lee igual.
+      --   * cabecera de disco, 0x34..0x47: telemetria global (los bytes 0x34.. solo los usa
+      --     el formato EDSK para su tabla de tamanos por pista, y nosotros generamos "MV")
+      --   * cabecera de pista, 0x60..0x6B: telemetria de esa pista (la lista de sectores
+      --     ocupa 0x18..0x5F con 9 sectores, o sea que de 0x60 en adelante esta libre)
+      -- Ver la tabla completa en la cabecera de la arquitectura.
+      finish_i       : in  std_logic;                     -- pulso: recorrido terminado
+      tlm_seen_i     : in  std_logic_vector(31 downto 0); -- IDs vistos en la pista
+      tlm_revs_i     : in  std_logic_vector(3 downto 0);  -- vueltas consumidas
+      tlm_idcrc_i    : in  std_logic_vector(15 downto 0); -- CRC de ID fallidos
+      tlm_dtcrc_i    : in  std_logic_vector(15 downto 0); -- CRC de datos fallidos
+      tlm_badtrk_i   : in  std_logic_vector(4 downto 0);
+      tlm_poscode_i  : in  std_logic_vector(4 downto 0);
+      tlm_flags_i    : in  std_logic_vector(7 downto 0);
 
       -- BUILD DE CONTROL C1: cuantos bytes de DATOS se han llegado a depositar en el buffer.
       -- Es el eslabon sin validar de toda la cadena: sabemos que la lectura MFM es exacta
@@ -128,8 +151,31 @@ architecture beh of floppy_dsk is
    --      escribamos se ve como vacio en vez de como datos de otro disco, que es mucho mas
    --      facil de interpretar.
    -- Cuesta 194.816 ciclos = 3 ms. Nada al lado de los segundos que tarda leer el disco.
-   type t_state is (DS_IDLE, DS_CLEAR, DS_DISKHDR, DS_RUN, DS_TRKHDR);
+   type t_state is (DS_IDLE, DS_CLEAR, DS_DISKHDR, DS_RUN, DS_TRKHDR, DS_TLM);
    signal state     : t_state := DS_IDLE;
+
+   -- M4019: telemetria. La leccion viene del core del Amiga (learning_cores/AExp-dev-hw-fdd):
+   -- llevan un dispositivo de diagnostico de 29 KB con mapa de registros versionado y volcados
+   -- de campo, y descubrieron que SIETE volcados que creian distintos eran en realidad DOS
+   -- observaciones repetidas. De ahi el nonce y el tiempo de actividad: dos volcados nunca
+   -- pueden confundirse en silencio. Nosotros veniamos contando destellos de un LED.
+   constant C_MS_DIV  : natural := G_CLK_HZ / 1000;
+   signal ms_div      : natural range 0 to C_MS_DIV - 1 := 0;
+   signal uptime_ms   : unsigned(31 downto 0) := (others => '0');
+   signal nonce       : unsigned(7 downto 0) := (others => '0');
+   signal trk_written : unsigned(7 downto 0) := (others => '0');
+   signal fin_pend    : std_logic := '0';
+   signal fin_d       : std_logic := '0';   -- finish_i es un NIVEL, no un pulso
+
+   -- Valores latcheados al cerrar la pista: para cuando se escribe su cabecera, floppy_mfm
+   -- ya puede haber arrancado la pista siguiente.
+   signal t_seen      : std_logic_vector(31 downto 0) := (others => '0');
+   signal t_revs      : std_logic_vector(3 downto 0)  := (others => '0');
+   signal t_idcrc     : std_logic_vector(15 downto 0) := (others => '0');
+   signal t_dtcrc     : std_logic_vector(15 downto 0) := (others => '0');
+   signal t_track     : std_logic_vector(6 downto 0)  := (others => '0');
+
+   constant C_TLM_SIG : t_rom(0 to 5) := (x"43", x"50", x"43", x"54", x"4C", x"4D");  -- "CPCTLM"
 
    signal hdr_idx   : unsigned(8 downto 0) := (others => '0');   -- 0..255 dentro de la cabecera
    signal trk_base  : unsigned(17 downto 0) := (others => '0');  -- inicio del bloque de la pista
@@ -159,12 +205,35 @@ begin
                  "00100" when wr_count < 250000 else
                  "00101";
 
+   -- M4019: reloj de milisegundos libre desde el arranque. Va aparte del FSM a proposito:
+   -- tiene que seguir corriendo entre recorridos para que dos volcados nunca den la misma hora.
+   uptime_proc : process (clk_i)
+   begin
+      if rising_edge(clk_i) then
+         if ms_div = C_MS_DIV - 1 then
+            ms_div    <= 0;
+            uptime_ms <= uptime_ms + 1;
+         else
+            ms_div <= ms_div + 1;
+         end if;
+      end if;
+   end process uptime_proc;
+
    main_proc : process (clk_i)
       variable slot : integer range 0 to 15;
       variable fld  : integer range 0 to 7;
+      variable tix  : integer range 0 to 31;
    begin
       if rising_edge(clk_i) then
          we_r <= '0';
+
+         -- M4019: el recorrido terminado puede llegar mientras se escribe la cabecera de la
+         -- ultima pista, asi que se retiene hasta volver a DS_RUN. Por FLANCO: scan_done es
+         -- un nivel que se queda alto, y por nivel reescribiriamos el bloque en bucle.
+         fin_d <= finish_i;
+         if finish_i = '1' and fin_d = '0' then
+            fin_pend <= '1';
+         end if;
 
          if rst_i = '1' then
             state   <= DS_IDLE;
@@ -174,9 +243,12 @@ begin
 
                when DS_IDLE =>
                   if start_i = '1' then
-                     clr_addr <= (others => '0');
-                     wr_count <= (others => '0');
-                     state    <= DS_CLEAR;
+                     clr_addr    <= (others => '0');
+                     wr_count    <= (others => '0');
+                     nonce       <= nonce + 1;          -- M4019: cada recorrido, uno nuevo
+                     trk_written <= (others => '0');
+                     fin_pend    <= '0';
+                     state       <= DS_CLEAR;
                   end if;
 
                when DS_CLEAR =>
@@ -245,10 +317,23 @@ begin
 
                   if track_done_i = '1' then
                      trk_base <= resize(to_unsigned(256, 18) +
-                                        resize(unsigned(track_i) * C_TRKSZ_U, 18), 18);
+                                        resize(unsigned(done_track_i) * C_TRKSZ_U, 18), 18);
                      sect_cnt <= unsigned(sect_count_i);
+                     -- M4019: latchear la telemetria AQUI. Cuando se escriba la cabecera,
+                     -- floppy_mfm ya puede haber reiniciado sus contadores para la pista
+                     -- siguiente, asi que leerlos alli daria ceros.
+                     t_seen   <= tlm_seen_i;
+                     t_revs   <= tlm_revs_i;
+                     t_idcrc  <= tlm_idcrc_i;
+                     t_dtcrc  <= tlm_dtcrc_i;
+                     t_track  <= done_track_i;   -- M4021
                      hdr_idx  <= (others => '0');
                      state    <= DS_TRKHDR;
+                  elsif fin_pend = '1' then
+                     -- M4019: recorrido terminado -> reescribir el bloque global
+                     fin_pend <= '0';
+                     hdr_idx  <= (others => '0');
+                     state    <= DS_TLM;
                   end if;
 
                -- Bloque de informacion de pista: 256 bytes. Se escribe al final porque hasta
@@ -259,7 +344,7 @@ begin
                   if hdr_idx < 12 then
                      data_r <= C_TRACK_SIG(to_integer(hdr_idx));
                   elsif hdr_idx = 16#10# then
-                     data_r <= "0" & track_i;                            -- numero de pista
+                     data_r <= "0" & t_track;                            -- M4021: la pista real
                   elsif hdr_idx = 16#11# then
                      data_r <= x"00";                                    -- cara 0
                   elsif hdr_idx = 16#14# then
@@ -297,6 +382,25 @@ begin
                         when 7      => data_r <= std_logic_vector(to_unsigned(G_SECSIZE / 256, 8));
                         when others => data_r <= x"00";   -- ST1/ST2 a cero = sin errores
                      end case;
+
+                  -- M4019: telemetria de esta pista, en 0x60..0x6B (libre: la lista de 9
+                  -- sectores acaba en 0x5F). Todo little endian.
+                  elsif hdr_idx >= 16#60# and hdr_idx <= 16#6B# then
+                     tix := to_integer(hdr_idx - 16#60#);
+                     case tix is
+                        when 0      => data_r <= t_seen(7 downto 0);
+                        when 1      => data_r <= t_seen(15 downto 8);
+                        when 2      => data_r <= t_seen(23 downto 16);
+                        when 3      => data_r <= t_seen(31 downto 24);
+                        when 4      => data_r <= "0000" & t_revs;
+                        when 5      => data_r <= "000" & std_logic_vector(sect_cnt);
+                        when 6      => data_r <= t_idcrc(7 downto 0);
+                        when 7      => data_r <= t_idcrc(15 downto 8);
+                        when 8      => data_r <= t_dtcrc(7 downto 0);
+                        when 9      => data_r <= t_dtcrc(15 downto 8);
+                        when 10     => data_r <= "0" & t_track;
+                        when others => data_r <= x"00";
+                     end case;
                   else
                      data_r <= x"00";
                   end if;
@@ -311,8 +415,42 @@ begin
                      id_c_arr <= (others => (others => '0'));
                      id_h_arr <= (others => (others => '0'));
                      id_r_arr <= (others => (others => '0'));
-                     id_n_arr <= (others => (others => '0'));
-                     state    <= DS_RUN;
+                     id_n_arr    <= (others => (others => '0'));
+                     trk_written <= trk_written + 1;     -- M4019
+                     state       <= DS_RUN;
+                  else
+                     hdr_idx <= hdr_idx + 1;
+                  end if;
+
+               -- M4019: bloque global, reescrito sobre 0x34..0x47 de la cabecera de disco al
+               -- terminar el recorrido. En un .DSK "MV" estandar esos bytes no se usan (la
+               -- tabla de tamanos por pista de 0x34 en adelante es cosa del EDSK), asi que la
+               -- imagen sigue siendo perfectamente valida.
+               when DS_TLM =>
+                  addr_r <= resize(to_unsigned(16#34#, 18) + resize(hdr_idx, 18), 18);
+                  we_r   <= '1';
+                  tix    := to_integer(hdr_idx);
+                  case tix is
+                     when 0 to 5 => data_r <= C_TLM_SIG(tix);          -- "CPCTLM"
+                     when 6      => data_r <= x"01";                   -- version del mapa
+                     when 7      => data_r <= std_logic_vector(nonce);
+                     when 8      => data_r <= std_logic_vector(wr_count(7 downto 0));
+                     when 9      => data_r <= std_logic_vector(wr_count(15 downto 8));
+                     when 10     => data_r <= "0000" & std_logic_vector(wr_count(19 downto 16));
+                     when 11     => data_r <= x"00";
+                     when 12     => data_r <= std_logic_vector(trk_written);
+                     when 13     => data_r <= "000" & tlm_badtrk_i;
+                     when 14     => data_r <= tlm_flags_i;
+                     when 15     => data_r <= "000" & tlm_poscode_i;
+                     when 16     => data_r <= std_logic_vector(uptime_ms(7 downto 0));
+                     when 17     => data_r <= std_logic_vector(uptime_ms(15 downto 8));
+                     when 18     => data_r <= std_logic_vector(uptime_ms(23 downto 16));
+                     when 19     => data_r <= std_logic_vector(uptime_ms(31 downto 24));
+                     when others => data_r <= x"00";
+                  end case;
+
+                  if hdr_idx = 19 then
+                     state <= DS_RUN;
                   else
                      hdr_idx <= hdr_idx + 1;
                   end if;

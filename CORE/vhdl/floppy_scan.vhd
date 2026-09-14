@@ -56,6 +56,13 @@ entity floppy_scan is
       -- Hacia floppy_dsk: arranque de imagen nueva y fin de cada pista
       dsk_start_o    : out std_logic;
       track_done_o   : out std_logic;
+      -- M4021: la pista que ACABA de terminar, registrada junto con track_done_o.
+      -- No vale usar track_o para esto: track_done_o esta registrado, asi que cuando el pulso
+      -- llega a floppy_dsk la cuenta de pista YA se ha incrementado en el mismo flanco. El
+      -- resultado era que cada cabecera de pista se escribia en la ranura de la SIGUIENTE, la
+      -- pista 0 se quedaba sin cabecera y la de la 39 caia fuera de la imagen. Encontrado con
+      -- el volcado de telemetria de M4020, no razonando.
+      done_track_o   : out std_logic_vector(6 downto 0);
       -- Diagnostico de posicionamiento, pensado para contarse de un vistazo en el LED:
       --   1 = la cabeza esta EXACTAMENTE donde se le pide (id_c = pista pedida)
       --   2 = se mueve el DOBLE de lo pedido (id_c = 2 x pista pedida)
@@ -74,6 +81,7 @@ architecture beh of floppy_scan is
    -- instante con el recuento viejo. Aqui se espera a ver done_o bajo antes de esperarlo alto.
    type t_state is (SC_IDLE, SC_WAIT_READY, SC_READ_ARM, SC_READ, SC_EVAL, SC_SEEK, SC_DONE);
    signal state      : t_state := SC_IDLE;
+   signal done_trk_r : unsigned(6 downto 0) := (others => '0');   -- M4021
 
    -- Banderas de posicionamiento: empiezan a '1' y solo se caen si alguna pista las contradice
    signal pos_exact  : std_logic := '1';
@@ -100,6 +108,7 @@ begin
    cur_track_o   <= std_logic_vector(track);
    id_is_cpc_o   <= id_cpc_r;
    dsk_start_o   <= dsk_strt_r;
+   done_track_o  <= std_logic_vector(done_trk_r);
    track_done_o  <= trk_done_r;
    pos_code_o    <= "00001" when pos_exact  = '1' else
                     "00010" when pos_double = '1' else
@@ -154,9 +163,16 @@ begin
 
                when SC_EVAL =>
                   -- Pista terminada: floppy_dsk escribe ahora su bloque de informacion, que ya
-                  -- conoce la lista de sectores. track_i todavia vale la pista actual en este
-                  -- ciclo (el incremento de abajo no surte efecto hasta el siguiente).
+                  -- conoce la lista de sectores. OJO: tiene que usar done_track_o, NO track_o -
+                  -- ver el comentario de ese puerto.
+                  --
+                  -- Lo que ponia aqui antes era FALSO y costo cinco builds: "track_i todavia
+                  -- vale la pista actual en este ciclo (el incremento de abajo no surte efecto
+                  -- hasta el siguiente)". Cierto dentro de ESTE proceso, pero trk_done_r
+                  -- tambien esta registrado, asi que el consumidor ve las dos cosas a la vez -
+                  -- el pulso Y la pista ya incrementada.
                   trk_done_r <= '1';
+                  done_trk_r <= track;      -- M4021: la pista que se acaba de leer
 
                   if track = 0 then
                      -- La pista 0 fija la referencia de cuantos sectores tiene este disco
