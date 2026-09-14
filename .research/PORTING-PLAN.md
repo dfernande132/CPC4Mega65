@@ -897,6 +897,83 @@ A 250 kbps MFM la celda de bit son 4 µs, y los intervalos entre transiciones de
 para clasificar los tres intervalos con un simple contador y ventanas, sin necesidad de PLL en
 la primera versión. `f_rdata_i` entrega pulsos activos a nivel bajo.
 
+
+## 12. M4D: arquitectura objetivo — lectura/escritura por pistas, bajo demanda (2026-09-13)
+
+Decidida con el usuario tras cerrar el diagnóstico de M4015. **Esto es el destino, no lo que
+hay hoy**: lo de hoy (leer el disco entero a un buffer y montar un `.dsk` de destino a mano)
+queda explícitamente marcado como apaño provisional.
+
+### Por qué se cambia
+
+El usuario lo dijo sin rodeos: *"lo de montar un dsk vacío me parece muy cutre"*. Y tiene
+razón — obligar a montar una imagen en blanco con la geometría correcta antes de poder volcar
+un disquete no es un diseño, es una consecuencia de cómo llegamos aquí. Su propuesta:
+
+> cuando eliges la unidad A en el menú OSD puedes elegir o disquetera real o dsks, en el mismo
+> menú. De esta forma, no lees el disco cuando lo metes, sino cuando haces un cat.
+
+### La arquitectura
+
+**Menú**: cada unidad (A: y B:) tiene un origen seleccionable — *imagen `.dsk` de la SD* o
+*disquetera física*. Sin acción aparte de "leer": eliges el origen y la unidad se comporta
+como esa cosa.
+
+**Lectura por pistas y bajo demanda**: cuando el u765 pide un bloque que cae en la pista T y
+esa pista todavía no se ha leído del disco físico, se lee **solo esa pista** (~400 ms
+contando la búsqueda) y se sirve. Se lleva un mapa de bits de pistas ya leídas. El primer
+`CAT` solo toca la pista 0, así que responde rápido; el resto se va poblando según se use.
+
+### La restricción física que descarta la versión ingenua
+
+Leer las 40 pistas son **8 segundos como mínimo** (una vuelta por pista a 200 ms; hoy son
+unos 16 porque se dan dos vueltas). El temporizador de AMSDOS está en el orden de uno o dos
+segundos, así que **"leer el disco entero en el primer acceso" no es viable**: el primer `CAT`
+fallaría siempre. De ahí que la granularidad tenga que ser la pista, no el disco.
+
+La alternativa intermedia —leer el disco entero al detectar inserción, con `f_diskchanged_i`
+(ya cableado desde M4A)— sí es viable y sería un escalón intermedio aceptable si la lectura
+por pistas se complica.
+
+### El bloqueo real que hay que resolver primero
+
+**Que el u765 acepte nuestra imagen sin que haya ningún fichero montado.** Hoy, sin montar
+nada, nunca recibe el evento de montaje: `image_ready` se queda a 0 y la unidad no existe
+para él. Dárselo por detrás es exactamente lo que se intentó en M4014 (pulso en `img_mounted`
+con `img_size` propio) y **colgó la unidad**: `image_ready` a 0 y AMSDOS reintentando para
+siempre con el motor girando, tal como lo describió el usuario por el LED rojo fijo.
+
+**Ese modo de fallo sigue sin explicarse** y es el primer trabajo de M4D. No es mucho código;
+es entender por qué el re-escaneo no completa. Pistas para retomarlo: el escaneo exige
+`!sd_busy_mount && !i_scan_lock && state == COMMAND_IDLE` (u765.sv:443), `i_scan_lock` es
+único y compartido entre las dos unidades, y la máquina de escaneo solo avanza cuando
+`i_current_drive` coincide, que alterna en cada `ce`.
+
+### Lo que NO era el problema (para no volver a perseguirlo)
+
+La tabla de desplazamientos de pista. El `.dsk` de Bruce Lee del usuario es un EDSK, pero con
+pistas uniformes de 4864 bytes (`0x34..` todo `0x13`), así que la rama EDSK de u765 produce
+**los mismos offsets** que la estándar. Esa tabla ya era correcta para nuestra imagen. Lo que
+fallaba era la **lista de sectores cacheada** — ver la cabecera de `main.vhd`, sección M4015.
+
+### Puerta que esto deja abierta: protecciones
+
+Hoy todo lo que hay después del separador MFM asume 40 pistas x 9 sectores x 512 bytes y
+coloca cada sector en `ranura = ID - 1`, y se genera un `.DSK` **estándar**, que no puede
+representar un CRC malo intencionado ni un sector débil (para eso existe el EDSK, con el
+tamaño real de cada sector y sus banderas ST1/ST2).
+
+Leer pista a pista hace natural anotar **lo que hay de verdad** en cada una -cuántos sectores,
+de qué tamaño, con qué CRC- en vez de forzarlo a un molde fijo, así que generar EDSK pasaría a
+ser un cambio acotado. No es objetivo de M4D, pero la arquitectura no se cierra la puerta.
+
+En la práctica importa poco a corto plazo: los juegos originales venían en 3" y esos no entran
+físicamente en la disquetera del MEGA65. Lo único plausible es una copia en 3,5" hecha desde
+un CPC, y esas suelen ser copias ya limpias. Nota para no confundir dos cosas distintas: una
+disquetera de 3,5" en un CPC real **sí** leería un disco protegido — la protección vive en la
+codificación magnética, no en la disquetera, y quien la interpreta es el mismo uPD765. Si
+algún día no la leemos, seremos nosotros, no el hardware.
+
 ## 8. Decisiones pendientes
 
 1. **Diseño de memoria M1A (sección 4.2) ya validado contra la Porting

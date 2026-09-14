@@ -67,7 +67,21 @@ entity floppy_mfm is
       id_track_o     : out std_logic_vector(7 downto 0);
       id_side_o      : out std_logic_vector(7 downto 0);
       id_sector_o    : out std_logic_vector(7 downto 0);
-      id_size_o      : out std_logic_vector(7 downto 0)
+      id_size_o      : out std_logic_vector(7 downto 0);
+
+      -- Flujo de bytes del campo de DATOS, para que floppy_scan lo vaya escribiendo en el
+      -- buffer de imagen segun llega. Se emiten TODOS los bytes, antes de saber si el CRC
+      -- cuadra: si no cuadrara, la vuelta siguiente reescribe el mismo sitio (ver el calculo
+      -- de direccion por identificador de sector en floppy_scan), asi que no hace falta
+      -- guardar la pista en ningun sitio intermedio.
+      data_byte_o    : out std_logic_vector(7 downto 0);
+      data_valid_o   : out std_logic;                     -- 1 ciclo por byte de datos
+      data_offset_o  : out std_logic_vector(10 downto 0); -- posicion del byte dentro del sector
+      -- Ranura del sector dentro de la pista, derivada del identificador: en PC 1..9 y en el
+      -- CPC &C1..&C9 dan los dos 1..9, o sea ranuras 0..8.
+      sec_slot_o     : out std_logic_vector(4 downto 0);
+      -- Pulso al terminar un sector con los DOS CRC correctos: su contenido ya es definitivo
+      sec_ok_o       : out std_logic
    );
 end floppy_mfm;
 
@@ -159,11 +173,16 @@ architecture beh of floppy_mfm is
    signal seen_map   : std_logic_vector(31 downto 0) := (others => '0');
    signal sect_cnt   : unsigned(4 downto 0) := (others => '0');
    signal rev_cnt    : natural range 0 to 7 := 0;
+   -- Se ha encontrado algun sector NUEVO en la vuelta actual? Si no, no hace falta seguir.
+   signal new_in_rev : std_logic := '0';
    signal done_r     : std_logic := '0';
    signal seen_index : std_logic := '0';
 
-   -- Vueltas que se observan antes de dar el recuento por definitivo
-   constant C_REVS : natural := 3;
+   -- Vueltas que se observan antes de dar el recuento por definitivo. Cada vuelta reescribe los
+   -- mismos sitios del buffer (la direccion sale del identificador del sector), asi que son
+   -- reintentos gratis: un sector que falle el CRC en una vuelta se recupera en la siguiente.
+   -- Se suben de 3 a 5 tras ver que en un disquete real se perdian entradas de directorio.
+   constant C_REVS : natural := 5;
 
    signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0) := (others => '0');
 
@@ -172,7 +191,12 @@ architecture beh of floppy_mfm is
    -- se da por bueno si su ID tambien lo estaba, porque si no, no se sabe a que sector pertenece.
    signal id_ok      : std_logic := '0';
    signal id_r_lat   : std_logic_vector(7 downto 0) := (others => '0');
-   signal data_left  : unsigned(10 downto 0) := (others => '0');   -- hasta 1024 bytes
+   signal data_len   : unsigned(10 downto 0) := (others => '0');   -- tamano del sector en curso
+   signal data_pos   : unsigned(10 downto 0) := (others => '0');   -- byte actual dentro del sector
+   signal data_byte  : std_logic_vector(7 downto 0) := (others => '0');
+   signal data_off_r : unsigned(10 downto 0) := (others => '0');
+   signal data_vld   : std_logic := '0';
+   signal sec_ok_r   : std_logic := '0';
 
    ------------------------------------------------------------------------------------------
    -- CRC-16-CCITT (x^16+x^12+x^5+1), preset 0xFFFF - el del formato IBM
@@ -202,6 +226,13 @@ begin
    sector_count_o <= std_logic_vector(sect_cnt);
    is_hd_o        <= rate_hd;
    done_o         <= done_r;
+
+   data_byte_o   <= data_byte;
+   data_valid_o  <= data_vld;
+   data_offset_o <= std_logic_vector(data_off_r);
+   -- Ranura = los 4 bits bajos del identificador menos 1 (sectores 1..9 -> ranuras 0..8)
+   sec_slot_o    <= std_logic_vector(resize(unsigned(id_r_lat(3 downto 0)) - 1, 5));
+   sec_ok_o      <= sec_ok_r;
    id_track_o     <= id_c;
    id_side_o      <= id_h;
    id_sector_o    <= id_r;
@@ -279,7 +310,9 @@ begin
       variable have_v : boolean;
    begin
       if rising_edge(clk_i) then
-         have_v := false;
+         have_v   := false;
+         data_vld <= '0';          -- pulsos de un ciclo
+         sec_ok_r <= '0';
 
          if rst_i = '1' or enable_i = '0' then
             state      <= ST_IDLE;
@@ -291,7 +324,7 @@ begin
             bit_cnt    <= 0;
             field_idx  <= 0;
             id_ok      <= '0';
-            data_left  <= (others => '0');
+            data_pos   <= (others => '0');
             rate_hd    <= '0';        -- se empieza probando DD, que es lo que usa el CPC
          elsif restart_i = '1' then
             state      <= ST_IDLE;
@@ -311,6 +344,7 @@ begin
                if seen_index = '0' then
                   seen_index <= '1';
                   rev_cnt    <= 0;
+                  new_in_rev <= '0';
                   state      <= ST_HUNT;
                elsif sect_cnt = "00000" then
                   -- Una vuelta entera sin enganchar nada con esta densidad: se prueba la otra.
@@ -318,13 +352,18 @@ begin
                   -- LED nunca llega a contar, que es la señal correcta de "aqui no hay nada".
                   rate_hd <= not rate_hd;
                   state   <= ST_HUNT;
-               elsif rev_cnt = C_REVS - 1 then
-                  -- Suficientes vueltas observadas: el mapa ya no va a crecer mas.
+               elsif new_in_rev = '0' or rev_cnt = C_REVS - 1 then
+                  -- SALIDA ANTICIPADA: si una vuelta entera no ha aportado ningun sector nuevo,
+                  -- el mapa ya no va a crecer y seguir dando vueltas es tiempo perdido. En un
+                  -- disquete sano eso ocurre en la segunda vuelta, asi que el recorrido de 40
+                  -- pistas baja de ~40 s a ~16 s. El limite de C_REVS sigue como tope para los
+                  -- casos en que si hagan falta reintentos.
                   done_r <= '1';
                   state  <= ST_IDLE;
                else
-                  rev_cnt <= rev_cnt + 1;
-                  state   <= ST_HUNT;
+                  rev_cnt    <= rev_cnt + 1;
+                  new_in_rev <= '0';
+                  state      <= ST_HUNT;
                end if;
             end if;
 
@@ -385,6 +424,7 @@ begin
                         id_ok     <= '0';       -- un ID nuevo invalida el anterior
                         field_idx <= 3;
                      elsif byte_v = C_MARK_DAM or byte_v = C_MARK_DDAM then
+                        data_pos  <= (others => '0');
                         field_idx <= 10;
                      else
                         state <= ST_HUNT;
@@ -398,10 +438,10 @@ begin
                      -- Tamano del sector = 128 << N. En el CPC N siempre es 2 (512 bytes); se
                      -- aceptan 0..3 y cualquier otro valor se considera un ID corrupto.
                      case byte_v(1 downto 0) is
-                        when "00"   => data_left <= to_unsigned(128, 11);
-                        when "01"   => data_left <= to_unsigned(256, 11);
-                        when "10"   => data_left <= to_unsigned(512, 11);
-                        when others => data_left <= to_unsigned(1024, 11);
+                        when "00"   => data_len <= to_unsigned(128, 11);
+                        when "01"   => data_len <= to_unsigned(256, 11);
+                        when "10"   => data_len <= to_unsigned(512, 11);
+                        when others => data_len <= to_unsigned(1024, 11);
                      end case;
                      if unsigned(byte_v) > 3 then
                         state <= ST_HUNT;
@@ -419,20 +459,59 @@ begin
                      end if;
                      state <= ST_HUNT;        -- ahora toca el campo de datos de este sector
 
-                  -- Campo de datos: los N bytes utiles y despues su propio CRC
+                  -- Campo de datos: los N bytes utiles y despues su propio CRC. Cada byte sale
+                  -- hacia fuera con su posicion dentro del sector, para que floppy_scan lo
+                  -- escriba en el buffer de imagen sin esperar al final.
                   when 10 =>
-                     if data_left = 1 then
+                     data_byte  <= byte_v;
+                     data_off_r <= data_pos;
+                     -- SOLO se sacan los bytes si el campo de ID inmediatamente anterior tenia
+                     -- el CRC bien. Si no, NO SE SABE a que sector pertenecen estos datos, y
+                     -- sec_slot_o seguiria apuntando al sector anterior: se escribirian encima
+                     -- de datos buenos, corrompiendolos. Con un CRC de ID fallando de vez en
+                     -- cuando -normal en un disquete con años- eso deja el directorio a medias:
+                     -- unas entradas correctas y otras con basura, que es justo lo que se vio.
+                     --
+                     -- M4013 - Y ADEMAS: solo si ese sector no esta YA VALIDADO (seen_map).
+                     --
+                     -- El fallo que arregla esto: los 512 bytes se sacan aqui, en el campo 10,
+                     -- pero su CRC no se comprueba hasta el campo 12. Un sector con el CRC de
+                     -- datos malo YA HA ESCRITO sus bytes corruptos en la imagen cuando se
+                     -- descubre. El contador de sectores si respeta el CRC -por eso marcaba 9-
+                     -- pero los bytes ya estaban puestos.
+                     --
+                     -- Normalmente la vuelta siguiente lo reescribiria bien. El problema es
+                     -- CUAL ES LA ULTIMA VUELTA: el recorrido para en la primera vuelta que no
+                     -- aporta sectores nuevos, o sea que la ultima pasada es siempre una
+                     -- RELECTURA COMPLETA, y sus bytes son los que quedan. Un solo sector que
+                     -- falle el CRC en esa ultima pasada deja la imagen corrupta mientras
+                     -- sect_cnt sigue diciendo 9 y bad_tracks sigue a 0: el LED daba verde de
+                     -- "perfecto" sobre una imagen rota.
+                     --
+                     -- Con seen_map como condicion, cada ranura se escribe UNA sola vez, en la
+                     -- primera vuelta que la decodifica. seen_map solo se marca cuando cuadran
+                     -- los DOS CRC (campo 12), asi que un sector con CRC malo deja su bit a 0
+                     -- y la vuelta siguiente lo vuelve a escribir; y un sector ya validado no
+                     -- lo puede estropear ninguna lectura posterior.
+                     --
+                     -- Efecto medible: los bytes escritos bajan de ~368.640 (dos vueltas) a
+                     -- ~184.320 (una), o sea que el codigo de escritura de wr_code_o tiene que
+                     -- pasar de 5 a 4. Si sigue dando 5, este cambio no ha entrado.
+                     data_vld   <= id_ok and
+                                   not seen_map(to_integer(unsigned(id_r_lat(4 downto 0))));
+                     data_pos   <= data_pos + 1;
+                     if data_pos = data_len - 1 then
                         field_idx <= 11;
-                     else
-                        data_left <= data_left - 1;
                      end if;
                   when 11 => field_idx <= 12;                  -- CRC alto de los datos
                   when 12 =>
                      -- Un sector cuenta como LEIDO DE VERDAD solo si cuadran los dos CRC, el del
                      -- ID y el de los datos, y ademas el ID era el inmediatamente anterior.
                      if f_crc16(crc, byte_v) = x"0000" and id_ok = '1' then
+                        sec_ok_r <= '1';        -- el contenido de este sector ya es definitivo
                         if seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) = '0' then
                            seen_map(to_integer(unsigned(id_r_lat(4 downto 0)))) <= '1';
+                           new_in_rev <= '1';
                            if sect_cnt /= "11111" then
                               sect_cnt <= sect_cnt + 1;
                            end if;

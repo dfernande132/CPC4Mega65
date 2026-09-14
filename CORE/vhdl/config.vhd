@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4B - Build M4006\n\n" &
+   "Status: Milestone 4B - Build M4017\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -337,7 +337,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 22;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 26;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -345,8 +345,8 @@ constant OPTM_SIZE         : natural := 22;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 15;  -- alto real del menu principal (15 lineas visibles:
-                                             -- las 22 de OPTM_ITEMS menos las 7 del submenu HDMI)
+constant OPTM_DY           : natural := 19;  -- alto real del menu principal (18 lineas visibles:
+                                             -- las 25 de OPTM_ITEMS menos las 7 del submenu HDMI)
 
 -- CPC4MEGA65 (M1B003): menu propio. El de la plantilla traia tres items "Drive X/Y/Z" con el
 -- atributo OPTM_G_MOUNT_DRV, y con C_VDNUM=0 (sin disquetera hasta Milestone 2) el firmware
@@ -382,22 +382,26 @@ constant OPTM_ITEMS        : string :=
    " Drive B:%s\n"          &    -- 3   <- unidad 1 del u765
    "\n"                     &    -- 4
    " Swap joystick ports\n" &    -- 5   <- C_MENU_FLIP_JOYS
-   " Floppy: read test\n"   &    -- 6   <- C_MENU_FLOPPY_TEST (M4A/M4B, ver mega65.vhd)
-   "\n"                     &    -- 7
-   " HDMI: %s\n"            &    -- 8   submenu HDMI: inicio
-   " HDMI Settings\n"       &    -- 9
+   " Internal to Drive A:\n" &   -- 6   <- C_MENU_FLOPPY_A  (radio: destino del disco fisico)
+   " Internal to Drive B:\n" &   -- 7   <- C_MENU_FLOPPY_B
+   " Read internal floppy\n" &   -- 8   <- C_MENU_FLOPPY_TEST (accion)
+   " FORMAT track 0 !\n"    &    -- 9   <- C_MENU_FLOPPY_FMT (M4C1: DESTRUYE la pista 0)
+   " Write: density alt\n"  &    -- 10  <- C_MENU_FLOPPY_DENS (invierte DENSEL, ver floppy_phys)
    "\n"                     &    -- 10
-   " 720p 50 Hz 16:9\n"     &    -- 11  <- C_MENU_HDMI_16_9_50
-   " 576p 50 Hz 4:3\n"      &    -- 12  <- C_MENU_HDMI_4_3_50
-   " 576p 50 Hz 5:4\n"      &    -- 13  <- C_MENU_HDMI_5_4_50
-   "\n"                     &    -- 14
-   " Back to main menu\n"   &    -- 15  submenu HDMI: fin
-   "\n"                     &    -- 16
-   " HDMI: CRT emulation\n" &    -- 17  <- C_MENU_CRT_EMULATION
-   " HDMI: Zoom-in\n"       &    -- 18  <- C_MENU_HDMI_ZOOM
-   " Audio improvements\n"  &    -- 19  <- C_MENU_IMPROVE_AUDIO
-   "\n"                     &    -- 20
-   " Close Menu\n";              -- 21
+   " HDMI: %s\n"            &    -- 11  submenu HDMI: inicio
+   " HDMI Settings\n"       &    -- 12
+   "\n"                     &    -- 13
+   " 720p 50 Hz 16:9\n"     &    -- 14  <- C_MENU_HDMI_16_9_50
+   " 576p 50 Hz 4:3\n"      &    -- 15  <- C_MENU_HDMI_4_3_50
+   " 576p 50 Hz 5:4\n"      &    -- 16  <- C_MENU_HDMI_5_4_50
+   "\n"                     &    -- 17
+   " Back to main menu\n"   &    -- 18  submenu HDMI: fin
+   "\n"                     &    -- 19
+   " HDMI: CRT emulation\n" &    -- 20  <- C_MENU_CRT_EMULATION
+   " HDMI: Zoom-in\n"       &    -- 21  <- C_MENU_HDMI_ZOOM
+   " Audio improvements\n"  &    -- 22  <- C_MENU_IMPROVE_AUDIO
+   "\n"                     &    -- 23
+   " Close Menu\n";              -- 24
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -411,11 +415,14 @@ constant OPTM_ITEMS        : string :=
 constant OPTM_G_MOUNT_A    : integer := 1;
 constant OPTM_G_MOUNT_B    : integer := 2;
 constant OPTM_G_FLIP_JOYS  : integer := 3;   -- CPC4MEGA65 M3
-constant OPTM_G_FLOPPY     : integer := 4;   -- CPC4MEGA65 M4A
-constant OPTM_G_HDMI       : integer := 5;
-constant OPTM_G_CRT        : integer := 6;
-constant OPTM_G_Zoom       : integer := 7;
-constant OPTM_G_Audio      : integer := 8;
+constant OPTM_G_FLOPPY_TGT : integer := 4;   -- CPC4MEGA65 M4B: destino A:/B: (grupo de radio)
+constant OPTM_G_FLOPPY     : integer := 5;   -- CPC4MEGA65 M4A: la accion de leer
+constant OPTM_G_FLOPPY_FMT : integer := 6;   -- CPC4MEGA65 M4C1: la accion de FORMATEAR
+constant OPTM_G_FLOPPY_DEN : integer := 7;   -- CPC4MEGA65 M4C1: polaridad de DENSEL al escribir
+constant OPTM_G_HDMI       : integer := 8;
+constant OPTM_G_CRT        : integer := 9;
+constant OPTM_G_Zoom       : integer := 10;
+constant OPTM_G_Audio      : integer := 11;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -431,24 +438,28 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_LINE,                              --  4 Line
 
                                              OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      --  5 Swap joystick ports (on/off)
-                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      --  6 Floppy: motor test (on/off)
-                                             OPTM_G_LINE,                              --  7 Line
-
-                                             OPTM_G_SUBMENU,                           --  8 HDMI submenu: START ("HDMI: %s")
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  9 Headline "HDMI Settings"
+                                             OPTM_G_FLOPPY_TGT + OPTM_G_STDSEL,        --  6 Internal to A:, por defecto
+                                             OPTM_G_FLOPPY_TGT,                        --  7 Internal to B:
+                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      --  8 Read internal floppy (on/off)
+                                             OPTM_G_FLOPPY_FMT + OPTM_G_SINGLESEL,     --  9 FORMAT track 0 (on/off)
+                                             OPTM_G_FLOPPY_DEN + OPTM_G_SINGLESEL,     -- 10 Write: density alt (on/off)
                                              OPTM_G_LINE,                              -- 10 Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 11 720p 50 Hz 16:9, por defecto
-                                             OPTM_G_HDMI,                              -- 12 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 13 576p 50 Hz 5:4
-                                             OPTM_G_LINE,                              -- 14 Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 15 HDMI submenu: END
 
-                                             OPTM_G_LINE,                              -- 16 Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 17 CRT emulation (on/off)
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 18 Zoom-in (on/off)
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 19 Audio improvements (on/off)
-                                             OPTM_G_LINE,                              -- 20 Line
-                                             OPTM_G_CLOSE                              -- 21 Close Menu
+                                             OPTM_G_SUBMENU,                           -- 11 HDMI submenu: START ("HDMI: %s")
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 12 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              -- 13 Line
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 14 720p 50 Hz 16:9, por defecto
+                                             OPTM_G_HDMI,                              -- 15 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 16 576p 50 Hz 5:4
+                                             OPTM_G_LINE,                              -- 17 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 18 HDMI submenu: END
+
+                                             OPTM_G_LINE,                              -- 19 Line
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 20 CRT emulation (on/off)
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 21 Zoom-in (on/off)
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 22 Audio improvements (on/off)
+                                             OPTM_G_LINE,                              -- 23 Line
+                                             OPTM_G_CLOSE                              -- 24 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

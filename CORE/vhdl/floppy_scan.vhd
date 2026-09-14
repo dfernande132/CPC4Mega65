@@ -41,6 +41,10 @@ entity floppy_scan is
       -- Numero de pista que viene ESCRITO en la cabecera de los sectores. Es la medida que
       -- dice si la cabeza esta donde creemos, independientemente de cuantos sectores se lean.
       mfm_id_track_i : in  std_logic_vector(7 downto 0);
+      -- Numero de SECTOR leido. Distingue de que formato es la pista: el PC numera 1..9 y el
+      -- CPC &C1..&C9. Es lo unico que separa "he formateado bien" de "no he escrito nada"
+      -- cuando se formatea sobre un disco que ya tenia 9 sectores por pista.
+      mfm_id_sector_i : in std_logic_vector(7 downto 0);
 
       -- Resultado del recorrido
       scan_done_o    : out std_logic;
@@ -49,11 +53,16 @@ entity floppy_scan is
       -- Sectores por pista observados en la pista 0, que es la referencia
       sect_ref_o     : out std_logic_vector(4 downto 0);
       cur_track_o    : out std_logic_vector(6 downto 0);
+      -- Hacia floppy_dsk: arranque de imagen nueva y fin de cada pista
+      dsk_start_o    : out std_logic;
+      track_done_o   : out std_logic;
       -- Diagnostico de posicionamiento, pensado para contarse de un vistazo en el LED:
       --   1 = la cabeza esta EXACTAMENTE donde se le pide (id_c = pista pedida)
       --   2 = se mueve el DOBLE de lo pedido (id_c = 2 x pista pedida)
       --   3 = ninguna de las dos, hay que mirarlo de otra forma
-      pos_code_o     : out std_logic_vector(4 downto 0)
+      pos_code_o     : out std_logic_vector(4 downto 0);
+      -- '1' = los sectores leidos llevan numeracion del CPC (&Cx)
+      id_is_cpc_o    : out std_logic
    );
 end floppy_scan;
 
@@ -69,6 +78,7 @@ architecture beh of floppy_scan is
    -- Banderas de posicionamiento: empiezan a '1' y solo se caen si alguna pista las contradice
    signal pos_exact  : std_logic := '1';
    signal pos_double : std_logic := '1';
+   signal id_cpc_r   : std_logic := '0';
 
    signal track      : unsigned(6 downto 0) := (others => '0');
    signal sect_ref   : unsigned(4 downto 0) := (others => '0');
@@ -76,6 +86,8 @@ architecture beh of floppy_scan is
    signal restart_r  : std_logic := '0';
    signal seek_r     : std_logic := '0';
    signal done_r     : std_logic := '0';
+   signal dsk_strt_r : std_logic := '0';
+   signal trk_done_r : std_logic := '0';
 
 begin
 
@@ -86,6 +98,9 @@ begin
    bad_tracks_o  <= std_logic_vector(bad_cnt);
    sect_ref_o    <= std_logic_vector(sect_ref);
    cur_track_o   <= std_logic_vector(track);
+   id_is_cpc_o   <= id_cpc_r;
+   dsk_start_o   <= dsk_strt_r;
+   track_done_o  <= trk_done_r;
    pos_code_o    <= "00001" when pos_exact  = '1' else
                     "00010" when pos_double = '1' else
                     "00011";
@@ -93,8 +108,10 @@ begin
    fsm_proc : process (clk_i)
    begin
       if rising_edge(clk_i) then
-         restart_r <= '0';
-         seek_r    <= '0';
+         restart_r  <= '0';
+         seek_r     <= '0';
+         dsk_strt_r <= '0';
+         trk_done_r <= '0';
 
          if rst_i = '1' or enable_i = '0' then
             state      <= SC_IDLE;
@@ -104,14 +121,16 @@ begin
             done_r     <= '0';
             pos_exact  <= '1';
             pos_double <= '1';
+            id_cpc_r   <= '0';
          else
             case state is
 
                when SC_IDLE =>
                   -- floppy_phys arranca solo con enable_i: aqui se espera a que recalibre.
-                  track   <= (others => '0');
-                  bad_cnt <= (others => '0');
-                  state   <= SC_WAIT_READY;
+                  track      <= (others => '0');
+                  bad_cnt    <= (others => '0');
+                  dsk_strt_r <= '1';        -- empieza una imagen nueva
+                  state      <= SC_WAIT_READY;
 
                when SC_WAIT_READY =>
                   if phys_error_i = '1' then
@@ -134,6 +153,11 @@ begin
                   end if;
 
                when SC_EVAL =>
+                  -- Pista terminada: floppy_dsk escribe ahora su bloque de informacion, que ya
+                  -- conoce la lista de sectores. track_i todavia vale la pista actual en este
+                  -- ciclo (el incremento de abajo no surte efecto hasta el siguiente).
+                  trk_done_r <= '1';
+
                   if track = 0 then
                      -- La pista 0 fija la referencia de cuantos sectores tiene este disco
                      sect_ref <= unsigned(mfm_count_i);
@@ -146,6 +170,11 @@ begin
                   -- Diagnostico de posicionamiento: solo tiene sentido en pistas que se han
                   -- leido bien (si no hay sectores, id_c es el de la pista anterior) y a partir
                   -- de la 1 (en la 0 no se distingue N de 2N).
+                  -- Numeracion &Cx = formato del CPC. Se mira en cualquier pista leida.
+                  if unsigned(mfm_count_i) /= 0 and mfm_id_sector_i(7 downto 4) = "1100" then
+                     id_cpc_r <= '1';
+                  end if;
+
                   if track /= 0 and unsigned(mfm_count_i) = sect_ref and sect_ref /= 0 then
                      if unsigned(mfm_id_track_i) /= track then
                         pos_exact <= '0';

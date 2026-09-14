@@ -270,13 +270,17 @@ signal main_rst               : std_logic;
 -- CPC4MEGA65 (M3): +2 mas, por "Swap joystick ports" y su separador.
 -- CPC4MEGA65 (M4A): +1 mas, por "Floppy: motor test".
 constant C_MENU_FLIP_JOYS      : natural := 5;
-constant C_MENU_FLOPPY_TEST    : natural := 6;
-constant C_MENU_HDMI_16_9_50   : natural := 11;
-constant C_MENU_HDMI_4_3_50    : natural := 12;
-constant C_MENU_HDMI_5_4_50    : natural := 13;
-constant C_MENU_CRT_EMULATION  : natural := 17;
-constant C_MENU_HDMI_ZOOM      : natural := 18;
-constant C_MENU_IMPROVE_AUDIO  : natural := 19;
+constant C_MENU_FLOPPY_A       : natural := 6;
+constant C_MENU_FLOPPY_B       : natural := 7;
+constant C_MENU_FLOPPY_TEST    : natural := 8;
+constant C_MENU_FLOPPY_FMT     : natural := 9;
+constant C_MENU_FLOPPY_DENS    : natural := 10;
+constant C_MENU_HDMI_16_9_50   : natural := 15;
+constant C_MENU_HDMI_4_3_50    : natural := 16;
+constant C_MENU_HDMI_5_4_50    : natural := 17;
+constant C_MENU_CRT_EMULATION  : natural := 21;
+constant C_MENU_HDMI_ZOOM      : natural := 22;
+constant C_MENU_IMPROVE_AUDIO  : natural := 23;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -338,6 +342,24 @@ signal main_floppy_is_hd      : std_logic;
 signal main_floppy_scan_done  : std_logic;
 signal main_floppy_bad_trk    : std_logic_vector(4 downto 0);
 signal main_floppy_pos_code   : std_logic_vector(4 downto 0);
+signal main_floppy_wr_code    : std_logic_vector(4 downto 0);
+signal main_floppy_buf_addr   : std_logic_vector(17 downto 0);
+signal main_floppy_buf_data   : std_logic_vector(7 downto 0);
+signal main_floppy_buf_we     : std_logic;
+signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
+signal floppy_we_a            : std_logic;
+signal floppy_we_b            : std_logic;
+
+-- CPC4MEGA65 M4C1: formateo
+signal main_floppy_fmt_en     : std_logic;
+signal main_floppy_fmt_busy   : std_logic;
+signal main_floppy_fmt_done   : std_logic;
+signal main_floppy_fmt_refus  : std_logic;
+signal main_floppy_fmt_full   : std_logic;
+-- DENSEL: por defecto '1' (doble densidad segun la convencion mas comun); el menu lo invierte
+-- para poder probar la otra polaridad sin recompilar. Solo afecta a la escritura.
+signal main_floppy_density    : std_logic;
+signal main_floppy_id_cpc     : std_logic;
 signal blink_count            : std_logic_vector(4 downto 0);
 
 -- Secuenciador que "dice" el recuento parpadeando (ver el comentario del LED)
@@ -503,6 +525,18 @@ begin
          floppy_scan_done_o      => main_floppy_scan_done,
          floppy_bad_tracks_o     => main_floppy_bad_trk,
          floppy_pos_code_o       => main_floppy_pos_code,
+         floppy_wr_code_o        => main_floppy_wr_code,
+         floppy_buf_addr_o       => main_floppy_buf_addr,
+         floppy_buf_data_o       => main_floppy_buf_data,
+         floppy_buf_we_o         => main_floppy_buf_we,
+         floppy_tgt_b_i          => main_floppy_tgt_b,
+         floppy_fmt_enable_i     => main_floppy_fmt_en,
+         floppy_density_i        => main_floppy_density,
+         floppy_fmt_busy_o       => main_floppy_fmt_busy,
+         floppy_fmt_done_o       => main_floppy_fmt_done,
+         floppy_fmt_refused_o    => main_floppy_fmt_refus,
+         floppy_fmt_full_o       => main_floppy_fmt_full,
+         floppy_id_is_cpc_o      => main_floppy_id_cpc,
 
          f_density_o             => f_density_o,
          f_motora_o              => f_motora_o,
@@ -699,6 +733,17 @@ begin
    -- unidad; M1B006 usaba 97 de 365, asi que las dos caben con holgura (~58% del total).
    ---------------------------------------------------------------------------------------
 
+   -- CPC4MEGA65 M4B: el PUERTO B de estos buffers estaba libre desde M2 (solo se usaba el A,
+   -- el de QNICE). Ahi entra ahora el escritor de imagen de la disquetera fisica, en dominio
+   -- del core. Es lo que permite meter un disco fisico sin memoria nueva ni CDC inventado:
+   -- leer del disquete no es un modo especial, es otra forma de llenar el MISMO buffer que hoy
+   -- llena el Shell desde un .DSK. Todo lo que viene despues (u765, AMSDOS, CAT) no se entera.
+   --
+   -- Solo escribe la unidad seleccionada en el menu: hay una disquetera fisica, no dos.
+   main_floppy_tgt_b <= main_osm_control_i(C_MENU_FLOPPY_B);
+   floppy_we_a       <= main_floppy_buf_we and not main_floppy_tgt_b;
+   floppy_we_b       <= main_floppy_buf_we and     main_floppy_tgt_b;
+
    i_mount_buf_a : entity work.dualport_2clk_ram
       generic map (
          ADDR_WIDTH        => 18,           -- 256KB
@@ -706,12 +751,17 @@ begin
          FALLING_A         => true          -- contrato de flanco de QNICE (Porting Guide S73)
       )
       port map (
-         -- solo QNICE
          clock_a           => qnice_clk_i,
          address_a         => qnice_dev_addr_i(17 downto 0),
          data_a            => qnice_dev_data_i(7 downto 0),
          wren_a            => qnice_mount_a_we,
-         q_a               => qnice_mount_a_data
+         q_a               => qnice_mount_a_data,
+
+         clock_b           => main_clk,
+         address_b         => main_floppy_buf_addr,
+         data_b            => main_floppy_buf_data,
+         wren_b            => floppy_we_a,
+         q_b               => open
       ); -- i_mount_buf_a
 
    i_mount_buf_b : entity work.dualport_2clk_ram
@@ -725,7 +775,13 @@ begin
          address_a         => qnice_dev_addr_i(17 downto 0),
          data_a            => qnice_dev_data_i(7 downto 0),
          wren_a            => qnice_mount_b_we,
-         q_a               => qnice_mount_b_data
+         q_a               => qnice_mount_b_data,
+
+         clock_b           => main_clk,
+         address_b         => main_floppy_buf_addr,
+         data_b            => main_floppy_buf_data,
+         wren_b            => floppy_we_b,
+         q_b               => open
       ); -- i_mount_buf_b
 
    ---------------------------------------------------------------------------------------
@@ -779,7 +835,10 @@ begin
    -- imagen en marcha, azul = queda cache por volcar a la SD).
    ---------------------------------------------------------------------------------------
 
-   main_floppy_enable <= main_osm_control_i(C_MENU_FLOPPY_TEST);
+   -- El formateo necesita la mecanica en marcha, asi que enciende tambien floppy_enable.
+   main_floppy_fmt_en <= main_osm_control_i(C_MENU_FLOPPY_FMT);
+   main_floppy_density <= not main_osm_control_i(C_MENU_FLOPPY_DENS);
+   main_floppy_enable <= main_osm_control_i(C_MENU_FLOPPY_TEST) or main_floppy_fmt_en;
 
    ---------------------------------------------------------------------------------------
    -- CPC4MEGA65 M4B: el LED "dice" el numero de sectores parpadeando
@@ -816,7 +875,10 @@ begin
    --     pistas malas. Contar 20 destellos no aporta nada que no supieramos ya; saber si la
    --     cabeza esta donde creemos si. Ademas 1-3 se cuentan de un vistazo.
    -- Si no hay fallos el LED se queda fijo y este numero no se usa.
-   blink_count <= main_floppy_pos_code when main_floppy_scan_done = '1' else main_floppy_sect_cnt;
+   -- BUILD DE CONTROL C1: al terminar el recorrido el LED "dice" el CODIGO DE ESCRITURA
+   -- (cuantos bytes han llegado al buffer), que es el unico eslabon de la cadena sin validar.
+   -- Ver la cabecera de floppy_dsk.vhd para la tabla de codigos.
+   blink_count <= main_floppy_wr_code when main_floppy_scan_done = '1' else main_floppy_sect_cnt;
 
    blink_proc : process (main_clk)
       variable n_slots : unsigned(7 downto 0);
@@ -860,14 +922,39 @@ begin
    -- ha enganchado ni un sector (ahi el separador o la densidad estan mal).
    -- Recorrido terminado y sin pistas malas: LED fijo, que es la señal mas facil de reconocer
    -- para el caso bueno. Con pistas malas, las cuenta parpadeando.
-   floppy_led_on  <= '1'                          when (main_floppy_scan_done = '1' and main_floppy_bad_trk = "00000") else
+   floppy_led_on  <= blink_on                     when (main_floppy_scan_done = '1') else
                      blink_on                     when main_floppy_mfm_done = '1' and blink_count /= "00000" else
                      '1'                          when main_floppy_mfm_done = '1' else
                      main_floppy_blink            when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
                      '1';
    -- Cuando hay recuento, el COLOR dice ademas de que densidad es el disquete que se ha
    -- conseguido leer: VERDE = DD (250 kbps, la del CPC), CIAN = HD (500 kbps).
-   floppy_led_col <= x"FF0000" when main_floppy_error = '1' else
+   -- CPC4MEGA65 M4C1: el formateo tiene su propio codigo de colores, y manda sobre el resto.
+   --   BLANCO    = formateando (f_wgate_o activo: se esta escribiendo de verdad)
+   --   AZUL      = terminado y los sectores leidos llevan numeracion &Cx -> ES NUESTRO FORMATO
+   --   NARANJA   = terminado pero los sectores siguen con numeracion de PC -> no se escribio
+   --   ROJO fijo = rechazado, el disquete esta protegido contra escritura
+   --
+   -- M4013: el MAGENTA se cambia por AZUL a peticion del usuario - en el LED RGB de la MEGA65
+   -- el magenta tira a blanco rosado y no se distingue con seguridad, y la distincion
+   -- "formato CPC / formato PC" es justo la que tiene que leerse sin dudar. El azul que
+   -- ocupaba "formateando" pasa a BLANCO (es un estado transitorio, solo hace falta ver que
+   -- algo esta pasando) y el blanco que ocupaba "formateado sin mas" pasa a AMARILLO.
+   -- La distincion magenta/naranja es la que hace util la prueba: sobre un disco de PC, que
+   -- salgan 9 sectores NO distingue "he formateado bien" de "no he escrito nada", porque su
+   -- pista 0 ya tenia 9. El numero de sector si lo distingue.
+   floppy_led_col <= x"FF0000" when main_floppy_fmt_refus = '1' else
+                     x"FFFFFF" when main_floppy_fmt_busy  = '1' else
+                     x"0000FF" when (main_floppy_fmt_done = '1' and main_floppy_id_cpc = '1') else
+                     x"FF8000" when (main_floppy_fmt_done = '1' and main_floppy_fmt_full = '1') else
+                     x"FFFF00" when main_floppy_fmt_done  = '1' else
+                     x"FF0000" when main_floppy_error = '1' else
+                     -- Al terminar un recorrido, AZUL si los sectores llevan numeracion del
+                     -- CPC (&Cx). Sirve para dos cosas: confirmar que un disquete es formato
+                     -- CPC, y -tras formatear y volver a leer- confirmar que lo que escribimos
+                     -- se puede leer. Sin esto, el resultado del formateo no era comprobable.
+                     x"0000FF" when (main_floppy_scan_done = '1' and main_floppy_bad_trk = "00000"
+                                     and main_floppy_id_cpc = '1') else
                      x"00FF00" when (main_floppy_scan_done = '1' and main_floppy_bad_trk = "00000") else
                      x"FF0000" when main_floppy_scan_done = '1' else
                      x"00FFFF" when (main_floppy_mfm_done = '1' and main_floppy_is_hd = '1') else

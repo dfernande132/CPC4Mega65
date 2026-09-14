@@ -95,6 +95,22 @@ entity main is
       floppy_scan_done_o      : out std_logic;
       floppy_bad_tracks_o     : out std_logic_vector(4 downto 0);
       floppy_pos_code_o       : out std_logic_vector(4 downto 0);
+      floppy_wr_code_o        : out std_logic_vector(4 downto 0);
+      -- M4B2b-ii: puerto de escritura hacia el buffer de imagen (puerto B, libre desde M2)
+      floppy_buf_addr_o       : out std_logic_vector(17 downto 0);
+      floppy_buf_data_o       : out std_logic_vector(7 downto 0);
+      floppy_buf_we_o         : out std_logic;
+      -- M4014: a que unidad va la disquetera fisica ('0' = A:, '1' = B:). Hace falta aqui
+      -- para saber en cual de las dos hay que volver a disparar el montaje al terminar.
+      floppy_tgt_b_i          : in  std_logic;
+      -- M4C1: formateo de pista. floppy_fmt_enable_i es el permiso Y el disparo.
+      floppy_fmt_enable_i     : in  std_logic;
+      floppy_density_i        : in  std_logic;
+      floppy_fmt_busy_o       : out std_logic;
+      floppy_fmt_done_o       : out std_logic;
+      floppy_fmt_refused_o    : out std_logic;
+      floppy_fmt_full_o       : out std_logic;
+      floppy_id_is_cpc_o      : out std_logic;
 
       f_density_o             : out std_logic;
       f_motora_o              : out std_logic;
@@ -296,12 +312,34 @@ signal main_sd_ack  : std_logic;
 ----------------------------------------------------------------------------------------------
 
 -- 64MHz / (2*320000) = 100Hz. En el QL era 84MHz/(2*420000), el mismo tono con su reloj.
-constant C_FDC_SND_HALF_PERIOD : natural := 320000;
+-- M4015: el zumbido no sonaba NADA desde M4012, y no era cuestion de volumen sino de
+-- aritmetica. 320.000 ciclos a 64 MHz son 5 ms de semiperiodo (tono de 100 Hz), dimensionado
+-- para cuando el sonido duraba todo lo que el motor girase. Al atarlo a fdc_busy, cada rafaga
+-- dura lo que tarda QNICE en bombear un bloque de 512 bytes -medio milisegundo largo- y
+-- ademas el contador se reiniciaba en cada rafaga: fdc_snd_tone no llegaba a conmutar ni una
+-- vez y se quedaba en '0', justo el valor que la salida exige que sea '1'.
+--
+-- Arreglo en tres partes: subir a ~2 kHz (mas parecido a una disquetera de verdad ademas),
+-- dejar el oscilador LIBRE mientras el motor gira -lo que se enciende y apaga es la salida,
+-- no el oscilador- y estirar cada acceso a 20 ms para que se oiga como un "brrp" en vez de
+-- como un fragmento de onda. Accesos seguidos se funden en un zumbido continuo.
+-- M4016: vuelta a los 100 Hz originales. Los 2 kHz de M4015 sonaban, pero al usuario le
+-- resultaron demasiado agudos; pidio "el mismo que tenian las primeras versiones". Ese era
+-- este: 320.000 ciclos de semiperiodo, el mismo registro grave que usa QL4M65 para el zumbido
+-- del microdrive. (Se busco tambien en AExp por si tenia uno propio que copiar: no lo tiene,
+-- lo del Amiga son los clicks de paso del cabezal del propio Minimig, que es otra cosa.)
+--
+-- Ahora 100 Hz SI suena, que antes no: lo que impedia oirlo no era la frecuencia sino que el
+-- oscilador se reiniciaba en cada rafaga. Con el oscilador libre y la retencion, cada acceso
+-- deja sonar varios ciclos completos.
+constant C_FDC_SND_HALF_PERIOD : natural := 320000;     -- 5 ms -> 100 Hz
+constant C_FDC_SND_HOLD        : natural := 3200000;    -- 50 ms: ~5 ciclos completos a 100 Hz
 constant C_FDC_SND_AMP_ACTIVE  : natural := 1500;   -- transferiendo bloques
 constant C_FDC_SND_AMP_IDLE    : natural := 500;    -- motor girando en vacio
 
 signal fdc_snd_cnt   : natural range 0 to C_FDC_SND_HALF_PERIOD - 1 := 0;
 signal fdc_snd_tone  : std_logic := '0';
+signal fdc_snd_hold  : natural range 0 to C_FDC_SND_HOLD := 0;
 signal fdc_busy      : std_logic;
 signal fdc_snd_audio : signed(15 downto 0);
 
@@ -343,6 +381,73 @@ signal floppy_mfm_restart : std_logic;
 signal floppy_mfm_done    : std_logic;
 signal floppy_sect_cnt    : std_logic_vector(4 downto 0);
 signal floppy_id_track    : std_logic_vector(7 downto 0);
+signal floppy_id_side     : std_logic_vector(7 downto 0);
+signal floppy_id_sector   : std_logic_vector(7 downto 0);
+signal floppy_id_size     : std_logic_vector(7 downto 0);
+signal floppy_data_byte   : std_logic_vector(7 downto 0);
+signal floppy_data_valid  : std_logic;
+signal floppy_data_offset : std_logic_vector(10 downto 0);
+signal floppy_sec_slot    : std_logic_vector(4 downto 0);
+signal floppy_sec_ok      : std_logic;
+signal floppy_dsk_start   : std_logic;
+
+-- M4017: REVERTIDO. Lo que sigue documenta un callejon sin salida, para no repetirlo.
+--
+-- Se intentaron DOS formas de decirle al u765 que la imagen habia cambiado bajo sus pies, y
+-- las dos empeoraron las cosas en hardware:
+--   * M4014: simular un montaje nuevo (pulso en img_mounted con img_size propio). Colgaba la
+--     unidad: image_ready se quedaba a 0 y AMSDOS reintentaba para siempre con el motor
+--     girando (LED rojo fijo).
+--   * M4015/M4016: invalidar la cache (image_trackinfo_dirty + i_secinfo_valid) desde fuera,
+--     manteniendo el pulso ~4 us. Daba "Read fail" con un EDSK montado y, peor, en M4016
+--     colgo TAMBIEN el caso que funcionaba (imagen DATA estandar). El mecanismo en si es
+--     correcto -desde el estado de reposo, dirty=1 dispara la recarga sin necesidad de seek
+--     (u765.sv:557)- pero mantener el pulso interfiere con una secuencia en vuelo:
+--     tinfo_lock, o el lector de informacion de sector, se reinician a mitad.
+--
+-- Se vuelve al comportamiento de M4013, que es el ultimo estado DEMOSTRADO bueno: con una
+-- imagen DATA estandar de 194.816 bytes montada, el CAT da 76K libres y todos los ficheros,
+-- identico al CPC real.
+--
+-- LECCION: todo esto son sintomas de un mismo atajo -reescribir la imagen en la RAM por
+-- detras de un modulo que esta pensado para leer ficheros de la SD y que cachea estado ligado
+-- al montaje. La solucion no es apuntalar el atajo con mas pulsos, es el montaje de verdad:
+-- ver PORTING-PLAN.md seccion 12 (M4D). Lo que queda del comentario original explica POR QUE
+-- una imagen cualquiera da un CAT a medias, que sigue siendo cierto y sigue sin arreglarse.
+--
+-- EL FALLO, diagnosticado sobre el .dsk real del usuario el 2026-09-13. Escribimos la imagen
+-- en la RAM por detras, sin volver a montarla, y u765 CACHEA la lista de sectores de cada
+-- pista (i_secinfo_valid / image_trackinfo_dirty), invalidandola solo al montar. Asi que
+-- seguia usando la lista de la imagen ANTERIOR sobre nuestros datos.
+--
+-- Por que eso corrompe justo "unas entradas si y otras no": un .dsk real del CPC lleva los
+-- sectores en ORDEN FISICO, entrelazado. El Bruce Lee del usuario es "C1 C6 C2 C7 C3 C8 C4
+-- C9 C5". Nosotros los colocamos en ORDEN LOGICO (C1..C9, ranura = ID-1). Con la lista vieja
+-- sobre nuestros datos sale una PERMUTACION FIJA: pide C1 -> ranura 0 -> le damos C1 (bien),
+-- pide C6 -> ranura 1 -> le damos C2 (mal). De ahi un CAT identico en cada intento, con
+-- entradas correctas y basura mezcladas, y mas espacio libre del real.
+-- Con un .dsk en orden logico (el BLANK-DATA-178K que se genero para probar) coincide todo y
+-- el CAT sale perfecto: 76K y todos los ficheros, igual que en el CPC real.
+--
+-- LO QUE NO ERA: la tabla de desplazamientos de pista. Se creyo eso en M4014 y era falso -
+-- el Bruce Lee es un EDSK pero con pistas uniformes de 4864 bytes (0x34.. todo 0x13), asi
+-- que la rama EDSK de u765 produce exactamente los mismos offsets que la estandar. M4014
+-- simulaba un montaje nuevo para reconstruir esa tabla y ADEMAS colgaba la unidad:
+-- image_ready se quedaba a 0 y AMSDOS reintentaba para siempre con el motor girando.
+--
+-- Por eso aqui solo se invalida la cache, que es el camino que el propio modulo usa al
+-- cambiar de pista (u765.sv:537) y no puede bloquearse.
+--
+-- LIMITE CONOCIDO: si el .dsk montado fuese un EDSK de pistas de tamano VARIABLE (juegos con
+-- proteccion), los offsets si serian distintos a los nuestros y esto no bastaria. Para ese
+-- caso la via segura es montar una imagen DATA estandar de 194.816 bytes como destino.
+signal floppy_scan_done   : std_logic;
+
+signal floppy_track_done  : std_logic;
+signal floppy_cur_track   : std_logic_vector(6 downto 0);
+signal floppy_wprot       : std_logic;
+-- Recorrido de pistas: solo con la lectura, nunca durante un formateo (ver i_floppy_scan)
+signal floppy_scan_enable : std_logic;
 
 -- rom_map: mapa de bancos de ROM alta que existen de verdad. La MMU lo usa para filtrar la
 -- seleccion de banco que hace el software: "ROMbank <= rom_map[D] ? D : 8'h00"
@@ -627,6 +732,10 @@ begin
    -- Se mezcla en 17 bits y se satura antes de volver a 16, exactamente como hace el QL: asi un
    -- pico del PSG coincidiendo con el zumbido nunca puede dar la vuelta y convertirse en un
    -- chasquido. Peor caso 0x7FFF + 1500 = 34267, de sobra dentro del rango de 17 bits con signo.
+   -- CPC4MEGA65 (M4011): el zumbido de la disquetera se quita a peticion del usuario. El CPC
+   -- ya hace su propio ruido al acceder al disco, y el motor sigue girando varios segundos
+   -- despues del acceso (timeout de AMSDOS), asi que el zumbido se alargaba mucho mas que la
+   -- lectura real y molestaba. El generador de tono se deja en el fichero pero sin mezclar.
    audio_mix_l <= resize(mb_audio_l_s, 17) + resize(fdc_snd_audio, 17);
    audio_mix_r <= resize(mb_audio_r_s, 17) + resize(fdc_snd_audio, 17);
 
@@ -819,6 +928,8 @@ begin
       end if;
    end process;
 
+   floppy_scan_done_o <= floppy_scan_done;
+
    -- "Hay disco dentro": se muestrea el tamano de la imagen en el flanco de montaje
    -- (Amstrad.sv:748-750). img_size = 0 significa "expulsar", no "imagen vacia".
    process (clk_main_i)
@@ -849,6 +960,7 @@ begin
    fdc_motor_snd : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
+         -- Oscilador libre: solo depende del motor, nunca de la rafaga.
          if u765_motor = '0' then
             fdc_snd_cnt  <= 0;
             fdc_snd_tone <= '0';
@@ -858,11 +970,22 @@ begin
          else
             fdc_snd_cnt <= fdc_snd_cnt + 1;
          end if;
+
+         -- Retencion: cualquier transferencia recarga los 20 ms. Esto es lo que hace que un
+         -- acceso de medio milisegundo se oiga.
+         if fdc_busy = '1' then
+            fdc_snd_hold <= C_FDC_SND_HOLD;
+         elsif fdc_snd_hold /= 0 then
+            fdc_snd_hold <= fdc_snd_hold - 1;
+         end if;
       end if;
    end process fdc_motor_snd;
 
-   fdc_snd_audio <= to_signed(C_FDC_SND_AMP_ACTIVE, 16) when (fdc_snd_tone = '1' and fdc_busy = '1') else
-                    to_signed(C_FDC_SND_AMP_IDLE, 16)   when (fdc_snd_tone = '1') else
+   -- CPC4MEGA65 (M4012): el zumbido suena SOLO mientras hay transferencia real de bloques.
+   -- Antes sonaba tambien con el motor girando en vacio, y AMSDOS lo deja girando varios
+   -- segundos tras el acceso (su timeout), asi que el ruido se alargaba mucho mas que la
+   -- lectura y molestaba. Este es el trozo corto que el usuario si queria conservar.
+   fdc_snd_audio <= to_signed(C_FDC_SND_AMP_ACTIVE, 16) when (fdc_snd_tone = '1' and fdc_snd_hold /= 0) else
                     to_signed(0, 16);
 
    i_u765 : entity work.u765
@@ -980,6 +1103,7 @@ begin
          rst_i            => reset_hard_i,
 
          enable_i         => floppy_enable_i,
+         density_i        => floppy_density_i,
          seek_track_i     => floppy_seek_track,
          seek_start_i     => floppy_seek_start,
 
@@ -988,7 +1112,7 @@ begin
          error_o          => floppy_error_o,
          index_pulse_o    => floppy_index_pulse,
          disk_in_o        => floppy_disk_in_o,
-         write_prot_o     => open,
+         write_prot_o     => floppy_wprot,
          track_o          => open,
 
          f_density_o      => f_density_o,
@@ -999,8 +1123,10 @@ begin
          f_side1_o        => f_side1_o,
          f_stepdir_o      => f_stepdir_o,
          f_step_o         => f_step_o,
-         f_wdata_o        => f_wdata_o,
-         f_wgate_o        => f_wgate_o,
+         -- CPC4MEGA65 M4C1: la escritura la gobierna AHORA floppy_write, no este modulo. Si se
+         -- dejaran conectados aqui habria dos fuentes sobre el mismo pin.
+         f_wdata_o        => open,
+         f_wgate_o        => open,
          f_index_i        => f_index_i,
          f_track0_i       => f_track0_i,
          f_writeprotect_i => f_writeprotect_i,
@@ -1022,6 +1148,7 @@ begin
 
    floppy_index_blink_o <= floppy_index_blink;
    floppy_ready_o       <= floppy_ready;
+   floppy_scan_enable   <= floppy_enable_i and not floppy_fmt_enable_i;
 
    ----------------------------------------------------------------------------------------------
    -- CPC4MEGA65 M4B: separador de datos MFM y lectura de campos de ID
@@ -1049,10 +1176,49 @@ begin
          sector_count_o => floppy_sect_cnt,
          is_hd_o        => floppy_is_hd_o,
          id_track_o     => floppy_id_track,
-         id_side_o      => open,
-         id_sector_o    => open,
-         id_size_o      => open
+         id_side_o      => floppy_id_side,
+         id_sector_o    => floppy_id_sector,
+         id_size_o      => floppy_id_size,
+
+         data_byte_o    => floppy_data_byte,
+         data_valid_o   => floppy_data_valid,
+         data_offset_o  => floppy_data_offset,
+         sec_slot_o     => floppy_sec_slot,
+         sec_ok_o       => floppy_sec_ok
       ); -- i_floppy_mfm
+
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4B2b-ii: construccion de la imagen .DSK en el buffer
+   ----------------------------------------------------------------------------------------------
+
+   i_floppy_dsk : entity work.floppy_dsk
+      port map (
+         clk_i         => clk_main_i,
+         rst_i         => reset_hard_i,
+
+         start_i       => floppy_dsk_start,
+         track_i       => floppy_cur_track,
+         track_done_i  => floppy_track_done,
+         sect_count_i  => floppy_sect_cnt,
+
+         data_byte_i   => floppy_data_byte,
+         data_valid_i  => floppy_data_valid,
+         data_offset_i => floppy_data_offset,
+         sec_slot_i    => floppy_sec_slot,
+         sec_ok_i      => floppy_sec_ok,
+         id_track_i    => floppy_id_track,
+         id_side_i     => floppy_id_side,
+         id_sector_i   => floppy_id_sector,
+         id_size_i     => floppy_id_size,
+
+         buf_addr_o    => floppy_buf_addr_o,
+         buf_data_o    => floppy_buf_data_o,
+         buf_we_o      => floppy_buf_we_o,
+
+         img_size_o    => open,
+         busy_o        => open,
+         wr_code_o     => floppy_wr_code_o
+      ); -- i_floppy_dsk
 
    ----------------------------------------------------------------------------------------------
    -- CPC4MEGA65 M4B2b-i: recorrido del disco entero
@@ -1069,7 +1235,12 @@ begin
          clk_i         => clk_main_i,
          rst_i         => reset_hard_i,
 
-         enable_i      => floppy_enable_i,
+         -- CPC4MEGA65 M4C1: el recorrido NO puede correr mientras se formatea. Los dos mueven
+         -- la misma cabeza, y al arrancarlos juntos el escritor formateaba una pista cualquiera
+         -- (la que tocara cuando phys diera "ready" entre dos busquedas) en vez de la 0.
+         -- Con el formateo activo, floppy_phys recalibra a la pista 0 y se queda ahi, que es
+         -- justo donde tiene que escribir.
+         enable_i      => floppy_scan_enable,
 
          phys_ready_i  => floppy_ready,
          phys_error_i  => floppy_error_o,
@@ -1079,14 +1250,49 @@ begin
          mfm_restart_o  => floppy_mfm_restart,
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
-         mfm_id_track_i => floppy_id_track,
+         mfm_id_track_i  => floppy_id_track,
+         mfm_id_sector_i => floppy_id_sector,
 
-         scan_done_o   => floppy_scan_done_o,
+         scan_done_o   => floppy_scan_done,
          bad_tracks_o  => floppy_bad_tracks_o,
          sect_ref_o    => floppy_sector_count_o,
-         cur_track_o   => open,
-         pos_code_o    => floppy_pos_code_o
+         cur_track_o   => floppy_cur_track,
+         dsk_start_o   => floppy_dsk_start,
+         track_done_o  => floppy_track_done,
+         pos_code_o    => floppy_pos_code_o,
+         id_is_cpc_o   => floppy_id_is_cpc_o
       ); -- i_floppy_scan
+
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4C1: formateo de pista
+   --
+   -- Es lo unico de este proyecto que puede destruir datos. Ver la cabecera de floppy_write.vhd
+   -- para las cinco condiciones que tienen que cumplirse antes de que f_wgate_o se active.
+   ----------------------------------------------------------------------------------------------
+
+   i_floppy_write : entity work.floppy_write
+      generic map (
+         G_CLK_HZ   => G_CLK_HZ
+      )
+      port map (
+         clk_i      => clk_main_i,
+         rst_i      => reset_hard_i,
+
+         enable_i   => floppy_fmt_enable_i,
+         start_i    => floppy_fmt_enable_i,   -- el propio item de menu dispara el formateo
+         track_i    => (others => '0'),       -- M4C1: solo la pista 0
+         ready_i    => floppy_ready,
+         index_i    => floppy_index_pulse,
+         wprot_i    => floppy_wprot,
+
+         busy_o     => floppy_fmt_busy_o,
+         done_o     => floppy_fmt_done_o,
+         refused_o  => floppy_fmt_refused_o,
+         wrote_full_o => floppy_fmt_full_o,
+
+         f_wgate_o  => f_wgate_o,
+         f_wdata_o  => f_wdata_o
+      ); -- i_floppy_write
 
    -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,
    -- lo que interesa es el resultado global (ver mega65.vhd).

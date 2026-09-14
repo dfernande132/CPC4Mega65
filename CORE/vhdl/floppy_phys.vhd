@@ -34,6 +34,12 @@ entity floppy_phys is
 
       -- Control
       enable_i       : in  std_logic;                     -- '1' = encender motor y recalibrar
+      -- Selector de densidad hacia la disquetera (DENSEL/REDWC). SOLO afecta a la ESCRITURA:
+      -- controla la corriente de grabacion, no la velocidad de datos, que la genera el core.
+      -- Su polaridad varia entre modelos de disquetera y es el unico parametro de M4 que
+      -- seguia sin verificar, precisamente porque leer no depende de el. Se saca al menu para
+      -- poder probar las dos sin recompilar.
+      density_i      : in  std_logic;
       -- Busqueda de pista: se pulsa seek_start_i con la pista deseada en seek_track_i. Solo se
       -- acepta con ready_o a '1' (o sea, ya recalibrado), porque hasta entonces no se sabe
       -- donde esta la cabeza.
@@ -347,7 +353,7 @@ begin
    -- Cara 0 mientras no haya lectura de datos (fase B). Activo bajo, asi que '1' = cara 0.
    f_side1_o   <= C_INACTIVE;
 
-   f_density_o <= C_DENSITY_DD;
+   f_density_o <= density_i;
 
    -- Escritura desactivada por completo en esta fase (es la fase C). Dejar wgate inactivo no es
    -- cosmetico: con wgate activo por accidente la disquetera borraria el disquete.
