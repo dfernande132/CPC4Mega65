@@ -105,7 +105,8 @@ entity main is
       floppy_tgt_b_i          : in  std_logic;
       -- M4018 (MEDIDA, temporal): retardo artificial del acuse que ve el u765.
       -- 00 = sin retardo, 01 = 100 ms, 10 = 400 ms, 11 = 1 s.
-      sd_slow_i               : in  std_logic_vector(1 downto 0);
+      -- M4023: '1' = separador DPLL, '0' = clasificador de ventanas fijas
+      dpll_en_i               : in  std_logic;
       -- M4C1: formateo de pista. floppy_fmt_enable_i es el permiso Y el disparo.
       floppy_fmt_enable_i     : in  std_logic;
       floppy_density_i        : in  std_logic;
@@ -457,6 +458,8 @@ signal floppy_tlm_revs    : std_logic_vector(3 downto 0);
 signal floppy_tlm_idcrc   : std_logic_vector(15 downto 0);
 signal floppy_tlm_dtcrc   : std_logic_vector(15 downto 0);
 signal floppy_tlm_flags   : std_logic_vector(7 downto 0);
+signal floppy_tlm_pll     : std_logic_vector(15 downto 0);   -- M4024
+signal floppy_tlm_runts   : std_logic_vector(15 downto 0);   -- M4025
 
 -- M4020: VOLCADO AUTONOMO A LA SD.
 --
@@ -483,21 +486,15 @@ signal dump_scan_d        : std_logic := '0';
 constant C_DUMP_TMO       : natural := 6_400_000;    -- 100 ms de guarda
 signal dump_tmo           : natural range 0 to C_DUMP_TMO := 0;
 
--- M4018 (MEDIDA, temporal). La pregunta que decide si M4D es viable: leer una pista bajo
--- demanda cuesta unos 400 ms con la busqueda, y el propio shell.asm avisa de que "some cores
--- are very strict when it comes to the intervals between sd_rd_i and sd_ack_o". Si la cadena
--- no aguanta esa latencia, el diseño por pistas bajo demanda no se sostiene y hay que saberlo
--- ANTES de escribir el traductor de bloques.
---
--- Se retrasa la SUBIDA del acuse que ve el u765 (sd_ack_sys), no el del lado QNICE: ese sigue
--- gobernando el puerto A de los buffers y no se toca. El efecto es exactamente el de un bloque
--- que tarda en llegar. Los datos ya estan en el buffer cuando soltamos el acuse, asi que lo
--- unico que se mide es la TOLERANCIA A LA ESPERA, que es justo lo que se quiere saber.
-signal sd_ack_dly         : std_logic := '0';
-signal sd_ack_cnt         : natural range 0 to 64_000_000 := 0;
+-- M4018 fue una build de MEDIDA: retrasaba artificialmente la subida del acuse que ve el u765
+-- para averiguar cuanta latencia por bloque tolera la cadena, que es LA pregunta que decidia
+-- si M4D (leer pistas bajo demanda) era viable. RESULTADO: falla ya con 100 ms, asi que el
+-- diseño bajo demanda queda descartado y no se llego a escribir el traductor de bloques.
+-- Medida hecha y anotada en DECISIONES.md; el andamiaje se ha quitado en M4023.
 
 signal floppy_track_done  : std_logic;
 signal floppy_done_track  : std_logic_vector(6 downto 0);   -- M4021
+signal floppy_expect      : std_logic_vector(4 downto 0);   -- M4022
 signal floppy_cur_track   : std_logic_vector(6 downto 0);
 signal floppy_wprot       : std_logic;
 -- Recorrido de pistas: solo con la lectura, nunca durante un formateo (ver i_floppy_scan)
@@ -990,7 +987,7 @@ begin
    floppy_pos_code_o   <= floppy_pos_code;
    floppy_id_is_cpc_o  <= floppy_id_cpc;
 
-   floppy_tlm_flags <= "0000" & floppy_scan_done & floppy_density_i &
+   floppy_tlm_flags <= "000" & dpll_en_i & floppy_scan_done & floppy_density_i &
                        floppy_is_hd & floppy_id_cpc;
 
    -- M4020: ver el comentario largo en las declaraciones.
@@ -1030,30 +1027,6 @@ begin
          end if;
       end if;
    end process dump_proc;
-
-   -- M4018 (MEDIDA, temporal): ver el comentario en la zona de declaraciones.
-   sd_ack_delay_proc : process (clk_main_i)
-      variable target_v : natural range 0 to 64_000_000;
-   begin
-      if rising_edge(clk_main_i) then
-         case sd_slow_i is
-            when "01"   => target_v :=  6_400_000;   -- 100 ms a 64 MHz
-            when "10"   => target_v := 25_600_000;   -- 400 ms, el coste real de una pista
-            when "11"   => target_v := 64_000_000;   -- 1 s
-            when others => target_v := 0;
-         end case;
-
-         if main_sd_ack = '0' then
-            sd_ack_cnt <= target_v;
-            sd_ack_dly <= '0';
-         elsif sd_ack_cnt /= 0 then
-            sd_ack_cnt <= sd_ack_cnt - 1;
-            sd_ack_dly <= '0';
-         else
-            sd_ack_dly <= '1';
-         end if;
-      end if;
-   end process sd_ack_delay_proc;
 
    -- "Hay disco dentro": se muestrea el tamano de la imagen en el flanco de montaje
    -- (Amstrad.sv:748-750). img_size = 0 significa "expulsar", no "imagen vacia".
@@ -1158,7 +1131,7 @@ begin
          -- (WNS -4.98 ns, primera build de M2). Con el XPM delante pasa a ser main_clk ->
          -- main_clk y hace lo que siempre hizo: filtrar flancos.
          sd_ack       => qnice_sd_ack_i,
-         sd_ack_sys   => sd_ack_dly,
+         sd_ack_sys   => main_sd_ack,
 
          -- Lado "SD byte": dominio de QNICE de punta a punta gracias al clk_sd de arriba
          sd_buff_addr => qnice_sd_buff_addr_i,
@@ -1295,6 +1268,8 @@ begin
          ready_i        => floppy_ready,
          index_i        => floppy_index_pulse,
          restart_i      => floppy_mfm_restart,
+         expect_i       => floppy_expect,
+         dpll_en_i      => dpll_en_i,
          f_rdata_i      => f_rdata_i,
 
          done_o         => floppy_mfm_done,
@@ -1314,7 +1289,9 @@ begin
          tlm_seen_o     => floppy_tlm_seen,
          tlm_revs_o     => floppy_tlm_revs,
          tlm_idcrc_o    => floppy_tlm_idcrc,
-         tlm_dtcrc_o    => floppy_tlm_dtcrc
+         tlm_dtcrc_o    => floppy_tlm_dtcrc,
+         tlm_pllcells_o => floppy_tlm_pll,
+         tlm_runts_o    => floppy_tlm_runts
       ); -- i_floppy_mfm
 
    ----------------------------------------------------------------------------------------------
@@ -1361,7 +1338,9 @@ begin
          tlm_dtcrc_i   => floppy_tlm_dtcrc,
          tlm_badtrk_i  => floppy_bad_trk,
          tlm_poscode_i => floppy_pos_code,
-         tlm_flags_i   => floppy_tlm_flags
+         tlm_flags_i   => floppy_tlm_flags,
+         tlm_pllcells_i => floppy_tlm_pll,
+         tlm_runts_i    => floppy_tlm_runts
       ); -- i_floppy_dsk
 
    ----------------------------------------------------------------------------------------------
@@ -1392,6 +1371,7 @@ begin
          seek_start_o  => floppy_seek_start,
 
          mfm_restart_o  => floppy_mfm_restart,
+         mfm_expect_o   => floppy_expect,
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
          mfm_id_track_i  => floppy_id_track,

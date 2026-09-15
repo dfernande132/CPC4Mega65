@@ -36,6 +36,10 @@ entity floppy_scan is
 
       -- Hacia floppy_mfm
       mfm_restart_o  : out std_logic;
+      -- M4022: sectores esperados por pista (la referencia que fija la pista 0). Vale 0 hasta
+      -- que la pista 0 termina, que es justo lo que floppy_mfm necesita para no aplicar el
+      -- criterio nuevo en la pista que establece la referencia.
+      mfm_expect_o   : out std_logic_vector(4 downto 0);
       mfm_done_i     : in  std_logic;
       mfm_count_i    : in  std_logic_vector(4 downto 0);
       -- Numero de pista que viene ESCRITO en la cabecera de los sectores. Es la medida que
@@ -102,6 +106,7 @@ begin
    seek_track_o  <= std_logic_vector(track);
    seek_start_o  <= seek_r;
    mfm_restart_o <= restart_r;
+   mfm_expect_o  <= std_logic_vector(sect_ref);
    scan_done_o   <= done_r;
    bad_tracks_o  <= std_logic_vector(bad_cnt);
    sect_ref_o    <= std_logic_vector(sect_ref);

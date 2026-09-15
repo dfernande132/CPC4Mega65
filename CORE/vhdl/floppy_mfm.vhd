@@ -56,6 +56,25 @@ entity floppy_mfm is
       -- costaria una vuelta perdida por pista, y la densidad es del disquete, no de la pista.
       restart_i      : in  std_logic;
 
+      -- M4022: cuantos sectores se ESPERAN en esta pista (0 = todavia no se sabe, que es el
+      -- caso de la pista 0 porque es ella la que fija la referencia). Cambia dos cosas:
+      --
+      --   * NO abandonar mientras falten sectores. Antes se salia en cuanto una vuelta no
+      --     aportaba nada nuevo, y con dos sectores que fallan de forma persistente eso se
+      --     cumple en la SEGUNDA vuelta: se abandonaba con el 60% del presupuesto sin usar.
+      --     Medido en la pista 7 del disquete del usuario (volcado M4021): revs=1, faltaban
+      --     C3 y C7, dtCRC=4. Un disquete de 1988 puede darlos al tercer o cuarto intento.
+      --
+      --   * TERMINAR ANTES cuando ya estan todos. No hay que esperar al pulso de indice para
+      --     cerrar una pista completa, asi que una pista sana se lee en UNA vuelta en vez de
+      --     dos: el recorrido de 40 pistas baja de ~16 s a ~8 s.
+      expect_i       : in  std_logic_vector(4 downto 0) := (others => '0');
+
+      -- M4023: elige el separador. '0' = clasificador de ventanas fijas (el de siempre),
+      -- '1' = DPLL. Conmutable en caliente para poder comparar A/B con el mismo disquete en
+      -- la misma sesion, que es como el core del Amiga demostro causalidad en vez de suponerla.
+      dpll_en_i      : in  std_logic := '0';
+
       -- Flujo magnetico crudo (activo bajo, sin sincronizar)
       f_rdata_i      : in  std_logic;
 
@@ -89,7 +108,19 @@ entity floppy_mfm is
       tlm_seen_o     : out std_logic_vector(31 downto 0); -- que IDs se han visto (bit = ID and 31)
       tlm_revs_o     : out std_logic_vector(3 downto 0);  -- vueltas consumidas en esta pista
       tlm_idcrc_o    : out std_logic_vector(15 downto 0); -- campos de ID con CRC malo
-      tlm_dtcrc_o    : out std_logic_vector(15 downto 0)  -- campos de DATOS con CRC malo
+      tlm_dtcrc_o    : out std_logic_vector(15 downto 0); -- campos de DATOS con CRC malo
+
+      -- M4024: celdas emitidas POR EL CAMINO DPLL, saturante. Existe para no volver a
+      -- interpretar un resultado sin saber que codigo lo produjo: con el DPLL encendido esto
+      -- tiene que ser distinto de cero, y si es cero es que la opcion no llega hasta aqui.
+      -- M4023 dio resultados IDENTICOS con y sin DPLL, y "identico" es tambien la firma de
+      -- "no se aplico ningun cambio" - hay que poder distinguirlo.
+      tlm_pllcells_o : out std_logic_vector(15 downto 0);
+
+      -- M4025: flancos rechazados por llegar antes del minimo fisicamente posible. Si esto
+      -- sale 0, la hipotesis del pulso espurio esta muerta y hay que mirar a otro sitio; es
+      -- el contador el que hace falsable el arreglo.
+      tlm_runts_o    : out std_logic_vector(15 downto 0)
    );
 end floppy_mfm;
 
@@ -125,6 +156,51 @@ architecture beh of floppy_mfm is
 
    -- Densidad que se esta probando ahora mismo: '0' = DD, '1' = HD
    signal rate_hd : std_logic := '0';
+
+   ---------------------------------------------------------------------------------------------
+   -- M4023: SEPARADOR DPLL
+   --
+   -- POR QUE. El clasificador de ventanas fijas de arriba se justificaba asi: "los discos giran
+   -- a 300 RPM con +/-1,5% de tolerancia, muy por debajo del +/-25% que dan las ventanas".
+   -- El razonamiento tiene un agujero: ese +/-1,5% es de la velocidad MEDIA, pero en un disquete
+   -- real las transiciones de flujo adyacentes se repelen magneticamente (desplazamiento de
+   -- pico), y ese corrimiento es LOCAL y depende del patron de datos. Por eso los controladores
+   -- de verdad llevan precompensacion al escribir y un separador con PLL al leer.
+   --
+   -- Un intervalo desplazado cerca de una frontera cae en la caja equivocada, y a partir de ahi
+   -- el resto del sector es basura. Medido en hardware (volcados M4021/M4022): la pista 7 del
+   -- disquete del usuario pierde SIEMPRE los mismos dos sectores, 5 de 5 intentos, con
+   -- idCRC=0 y dtCRC=10 - los identificadores (cortos) sobreviven y los campos de datos
+   -- (largos) no. Y el CPC real lee ese mismo fichero sin problema.
+   --
+   -- COMO. Es el diseño de AExp (learning_cores/AExp-dev-hw-fdd, physical_fdd_bits.vhd),
+   -- reescrito para nuestro reloj. En vez de clasificar intervalos, se mantiene una fase y un
+   -- periodo que siguen al disco y se decide UN BIT POR FRONTERA DE CELDA. Un flanco desplazado
+   -- solo tira un poco de la fase en vez de cambiar de clase, asi que los errores se quedan
+   -- LOCALES: su banco de pruebas mostro que el mismo evento que con el clasificador corrompe
+   -- toda la cola, con DPLL es un solo bit mal.
+   --
+   -- Coma fija Q4 igual que ellos: 16 unidades = un ciclo de reloj. A 64 MHz una celda DD son
+   -- 2 us = 128 ciclos = 2048; HD la mitad. Ganancias: fase err/2, periodo err/64, y el periodo
+   -- recortado a +/-10% para que no pueda derivar de una densidad a la otra.
+   ---------------------------------------------------------------------------------------------
+   constant C_DPLL_PG   : natural := 1;    -- err/2 en la fase
+   constant C_DPLL_FG   : natural := 6;    -- err/64 en el periodo
+   constant C_DD_CELL   : natural := (G_CLK_HZ / 1_000_000) * 2 * 16;   -- 2 us -> 2048 @64MHz
+   constant C_HD_CELL   : natural := (G_CLK_HZ / 1_000_000) * 1 * 16;   -- 1 us -> 1024
+   constant C_DD_CMIN   : natural := C_DD_CELL - C_DD_CELL / 10;
+   constant C_DD_CMAX   : natural := C_DD_CELL + C_DD_CELL / 10;
+   constant C_HD_CMIN   : natural := C_HD_CELL - C_HD_CELL / 10;
+   constant C_HD_CMAX   : natural := C_HD_CELL + C_HD_CELL / 10;
+
+   signal cell_nom  : unsigned(12 downto 0);
+   signal cell_min  : unsigned(12 downto 0);
+   signal cell_max  : unsigned(12 downto 0);
+   signal pll_phase : unsigned(13 downto 0) := (others => '0');
+   signal pll_cell  : unsigned(12 downto 0) := to_unsigned(C_DD_CELL, 13);
+   signal pend_edge : std_logic := '0';
+   signal pll_cells : unsigned(15 downto 0) := (others => '0');   -- M4024
+   signal runt_cnt  : unsigned(15 downto 0) := (others => '0');   -- M4025
 
    -- Ventanas activas, seleccionadas por rate_hd
    signal lim_23  : natural range 0 to 1023;
@@ -247,6 +323,8 @@ begin
    tlm_revs_o    <= std_logic_vector(to_unsigned(rev_cnt, 4));
    tlm_idcrc_o   <= std_logic_vector(idcrc_err);
    tlm_dtcrc_o   <= std_logic_vector(dtcrc_err);
+   tlm_pllcells_o <= std_logic_vector(pll_cells);   -- M4024
+   tlm_runts_o    <= std_logic_vector(runt_cnt);    -- M4025
    data_offset_o <= std_logic_vector(data_off_r);
    -- Ranura = los 4 bits bajos del identificador menos 1 (sectores 1..9 -> ranuras 0..8)
    sec_slot_o    <= std_logic_vector(resize(unsigned(id_r_lat(3 downto 0)) - 1, 5));
@@ -259,8 +337,18 @@ begin
    ------------------------------------------------------------------------------------------
    -- Separador de datos: intervalos de flujo -> celdas MFM
    ------------------------------------------------------------------------------------------
+   -- M4023: nominal y recorte del DPLL segun la densidad que se este probando
+   cell_nom <= to_unsigned(C_HD_CELL, 13) when rate_hd = '1' else to_unsigned(C_DD_CELL, 13);
+   cell_min <= to_unsigned(C_HD_CMIN, 13) when rate_hd = '1' else to_unsigned(C_DD_CMIN, 13);
+   cell_max <= to_unsigned(C_HD_CMAX, 13) when rate_hd = '1' else to_unsigned(C_DD_CMAX, 13);
+
    sep_proc : process (clk_i)
       variable interval : natural range 0 to C_CNT_MAX;
+      variable edge_v   : boolean;
+      variable ph_v     : unsigned(13 downto 0);
+      variable err_v    : signed(15 downto 0);
+      variable cl_v     : signed(15 downto 0);
+      variable bit_v    : std_logic;
    begin
       if rising_edge(clk_i) then
          rdata_sr <= rdata_sr(1 downto 0) & f_rdata_i;
@@ -271,12 +359,95 @@ begin
             gap_cnt    <= 0;
             zeros_left <= 0;
             cell_sr    <= (others => '0');
+            pll_phase  <= (others => '0');
+            pll_cell   <= cell_nom;
+            pend_edge  <= '0';
+            runt_cnt   <= (others => '0');
          else
-            -- Contador de tiempo entre transiciones, saturante
+            ------------------------------------------------------------------------------------
+            -- M4025: ACONDICIONADO COMUN A LOS DOS SEPARADORES.
+            --
+            -- Lo que arregla: un flanco espurio (ruido del medio, un bit debil) llega antes del
+            -- minimo fisicamente posible - 4 us a DD, y aqui se rechaza por debajo de 3. Eso ya
+            -- se detectaba y no se emitia nada, CORRECTO. Pero el contador de intervalo se
+            -- reiniciaba IGUALMENTE, asi que la siguiente transicion buena se media desde el
+            -- ruido en vez de desde el ultimo flanco valido: intervalo equivocado y sincronismo
+            -- de bit perdido. Un solo pulso espurio corrompia DOS intervalos.
+            --
+            -- Ahora el flanco espurio se ignora del todo y el contador SIGUE corriendo, asi que
+            -- la siguiente transicion se mide bien y el ruido no deja rastro.
+            --
+            -- Por que aqui y no en cada separador: en los volcados de M4024 el clasificador y
+            -- el DPLL decodifican los mismos bytes hasta un punto concreto de la pista 7 y a
+            -- partir de ahi difieren (507/512 en C3, 144/512 en C7). Que ambos fallen en el
+            -- MISMO sitio y de forma distinta señala a lo que comparten, no a ellos.
+            --
+            -- Un intervalo demasiado LARGO es otra cosa - hueco entre sectores, dropout - y ahi
+            -- si hay que reiniciar la medida, que es lo que hace el camino normal.
+            ------------------------------------------------------------------------------------
             if gap_cnt /= C_CNT_MAX then
                gap_cnt <= gap_cnt + 1;
             end if;
 
+            edge_v   := false;
+            interval := gap_cnt;
+            if rdata_sr(2) = '1' and rdata_sr(1) = '0' then
+               if gap_cnt < lim_lo then
+                  if runt_cnt /= x"FFFF" then
+                     runt_cnt <= runt_cnt + 1;
+                  end if;
+               else
+                  edge_v  := true;
+                  gap_cnt <= 0;
+               end if;
+            end if;
+
+            if dpll_en_i = '1' then
+            ---------------------------------------------------------------------------------
+            -- M4023: separador DPLL. Ver el comentario largo en las declaraciones.
+            ---------------------------------------------------------------------------------
+            ph_v   := pll_phase + 16;                      -- Q4: 16 unidades = un ciclo
+            -- El bit de la celda: '1' si cayo un flanco en ella, ya sea en un ciclo anterior
+            -- (pend_edge) o justo en este mismo.
+            bit_v  := pend_edge;
+            if edge_v then
+               bit_v := '1';
+            end if;
+
+            if edge_v then
+               -- err = fase - celda/2, o sea lo descentrado que viene el flanco respecto al
+               -- centro de la ventana. La fase se corrige a la mitad del error y el periodo
+               -- una fraccion muy pequeña, que es lo que hace que un flanco suelto no arrastre.
+               err_v := signed(resize(ph_v, 16)) -
+                        signed(resize(pll_cell(12 downto 1), 16));
+               ph_v  := unsigned(resize(signed(resize(ph_v, 16)) -
+                                        shift_right(err_v, C_DPLL_PG), 14));
+               cl_v  := signed(resize(pll_cell, 16)) + shift_right(err_v, C_DPLL_FG);
+               if cl_v < signed(resize(cell_min, 16)) then
+                  pll_cell <= cell_min;
+               elsif cl_v > signed(resize(cell_max, 16)) then
+                  pll_cell <= cell_max;
+               else
+                  pll_cell <= unsigned(cl_v(12 downto 0));
+               end if;
+               pend_edge <= '1';
+            end if;
+
+            -- Frontera de celda: sale un bit, '1' si en esa celda cayo un flanco. Si no llegan
+            -- flancos (hueco entre sectores) el oscilador sigue libre soltando ceros, que es
+            -- justo lo que hace un separador real sobre una zona sin formatear.
+            if ph_v >= resize(pll_cell, 14) then
+               pll_phase <= ph_v - resize(pll_cell, 14);
+               cell_sr   <= cell_sr(14 downto 0) & bit_v;
+               cell_new  <= '1';
+               pend_edge <= '0';
+               if pll_cells /= x"FFFF" then
+                  pll_cells <= pll_cells + 1;   -- M4024: prueba de que ESTE camino corrio
+               end if;
+            else
+               pll_phase <= ph_v;
+            end if;
+            else
             -- ORDEN IMPORTANTE: primero el '1' de la transicion, despues sus ceros. Al reves
             -- (que es como estaba escrito en el primer intento) la palabra de sincronismo sale
             -- desplazada y no se encuentra nunca. Se emite una celda por ciclo de reloj: no hay
@@ -291,12 +462,9 @@ begin
                cell_new   <= '1';
             end if;
 
-            -- Flanco de bajada de f_rdata_i = transicion de flujo
-            if rdata_sr(2) = '1' and rdata_sr(1) = '0' then
-               interval := gap_cnt;
-               gap_cnt  <= 0;
-
-               if interval < lim_lo or interval > lim_hi then
+            -- Transicion de flujo ya filtrada arriba (M4025)
+            if edge_v then
+               if interval > lim_hi then
                   -- Intervalo imposible: hueco entre sectores, arranque del motor o dropout.
                   -- No se emite nada; el buscador de sincronismo se quedara sin encontrar
                   -- 0x4489 y seguira buscando, que es el comportamiento correcto.
@@ -312,6 +480,7 @@ begin
                   emit_one   <= '1';
                end if;
             end if;
+            end if;      -- dpll_en_i
          end if;
       end if;
    end process sep_proc;
@@ -374,12 +543,19 @@ begin
                   -- LED nunca llega a contar, que es la señal correcta de "aqui no hay nada".
                   rate_hd <= not rate_hd;
                   state   <= ST_HUNT;
-               elsif new_in_rev = '0' or rev_cnt = C_REVS - 1 then
-                  -- SALIDA ANTICIPADA: si una vuelta entera no ha aportado ningun sector nuevo,
-                  -- el mapa ya no va a crecer y seguir dando vueltas es tiempo perdido. En un
-                  -- disquete sano eso ocurre en la segunda vuelta, asi que el recorrido de 40
-                  -- pistas baja de ~40 s a ~16 s. El limite de C_REVS sigue como tope para los
-                  -- casos en que si hagan falta reintentos.
+               elsif rev_cnt = C_REVS - 1 then
+                  -- Presupuesto agotado: se da la pista por leida con lo que haya.
+                  done_r <= '1';
+                  state  <= ST_IDLE;
+               elsif new_in_rev = '0' and
+                     (expect_i = "00000" or sect_cnt >= unsigned(expect_i)) then
+                  -- SALIDA ANTICIPADA, pero solo si NO FALTA NADA. Si una vuelta no aporta
+                  -- sectores nuevos y ya tenemos los esperados, seguir girando es tiempo
+                  -- perdido. Si faltan, en cambio, hay que insistir: es justo el caso de un
+                  -- sector marginal que unas veces se lee y otras no. Ver expect_i.
+                  --
+                  -- expect_i = 0 (pista 0, que fija la referencia) mantiene el criterio
+                  -- antiguo, porque ahi no hay contra que comparar.
                   done_r <= '1';
                   state  <= ST_IDLE;
                else
@@ -539,6 +715,14 @@ begin
                               new_in_rev <= '1';
                               if sect_cnt /= "11111" then
                                  sect_cnt <= sect_cnt + 1;
+                              end if;
+                              -- M4022: si con este ya estan todos los esperados, la pista se
+                              -- cierra AQUI, sin esperar al pulso de indice. No hace falta
+                              -- tocar el estado: el bloque del indice ya exige done_r = '0',
+                              -- y floppy_scan reinicia en cuanto ve done_o.
+                              if expect_i /= "00000" and
+                                 (sect_cnt + 1) >= unsigned(expect_i) then
+                                 done_r <= '1';
                               end if;
                            end if;
                         end if;

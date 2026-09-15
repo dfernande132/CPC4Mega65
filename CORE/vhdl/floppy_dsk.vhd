@@ -88,6 +88,8 @@ entity floppy_dsk is
       tlm_badtrk_i   : in  std_logic_vector(4 downto 0);
       tlm_poscode_i  : in  std_logic_vector(4 downto 0);
       tlm_flags_i    : in  std_logic_vector(7 downto 0);
+      tlm_pllcells_i : in  std_logic_vector(15 downto 0);   -- M4024
+      tlm_runts_i    : in  std_logic_vector(15 downto 0);   -- M4025
 
       -- BUILD DE CONTROL C1: cuantos bytes de DATOS se han llegado a depositar en el buffer.
       -- Es el eslabon sin validar de toda la cadena: sabemos que la lectura MFM es exacta
@@ -446,11 +448,23 @@ begin
                      when 17     => data_r <= std_logic_vector(uptime_ms(15 downto 8));
                      when 18     => data_r <= std_logic_vector(uptime_ms(23 downto 16));
                      when 19     => data_r <= std_logic_vector(uptime_ms(31 downto 24));
+                     -- M4024: celdas emitidas por el DPLL. Cero con el DPLL encendido
+                     -- significa que la opcion no llega al separador.
+                     when 20     => data_r <= tlm_pllcells_i(7 downto 0);
+                     when 21     => data_r <= tlm_pllcells_i(15 downto 8);
+                     -- M4025: flancos espurios rechazados. Si sale 0, la hipotesis del
+                     -- pulso espurio esta muerta.
+                     when 22     => data_r <= tlm_runts_i(7 downto 0);
+                     when 23     => data_r <= tlm_runts_i(15 downto 8);
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 19 then
-                     state <= DS_RUN;
+                  if hdr_idx = 23 then
+                     -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
+                     -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
+                     -- nonce y los contadores se acumulan. El volcado B de M4023 salio con
+                     -- 80 pistas y el doble de bytes justo por esto.
+                     state <= DS_IDLE;
                   else
                      hdr_idx <= hdr_idx + 1;
                   end if;
