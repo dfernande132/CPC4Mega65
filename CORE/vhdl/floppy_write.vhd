@@ -496,8 +496,12 @@ begin
 
             if state = W_DONE or state = W_REFUSED then
                wgate_r <= '1';
-               if start_i = '0' and enable_i = '1' then
-                  null;                     -- se queda hasta que lo lea quien corresponda
+               -- M4027: REARME. Antes esto era terminal y solo se salia bajando enable_i,
+               -- porque start_i era directamente el item de menu, un nivel. Ahora el
+               -- secuenciador de 40 pistas manda un PULSO por pista, asi que hay que volver a
+               -- reposo en cuanto lo suelta para poder aceptar el siguiente.
+               if start_i = '0' then
+                  state <= W_IDLE;
                end if;
             end if;
          end if;

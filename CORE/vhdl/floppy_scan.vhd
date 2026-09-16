@@ -40,6 +40,18 @@ entity floppy_scan is
       -- que la pista 0 termina, que es justo lo que floppy_mfm necesita para no aplicar el
       -- criterio nuevo en la pista que establece la referencia.
       mfm_expect_o   : out std_logic_vector(4 downto 0);
+
+      -- M4027: MODO FORMATEO. El mismo recorrido de 40 pistas que ya esta probado (pos_code=1
+      -- en todas), pero en vez de leer cada pista se dispara el formateador y se espera a que
+      -- termine. Reaprovechar el secuenciador de lectura en vez de escribir uno nuevo: la
+      -- busqueda de pista es justo la parte delicada y esta es la version validada.
+      --
+      -- fmt_start_o es un PULSO por pista, no un nivel: floppy_write se rearma al soltarlo.
+      -- Un rechazo (disquete protegido) ABORTA el recorrido entero en vez de colgarlo.
+      fmt_mode_i     : in  std_logic := '0';
+      fmt_start_o    : out std_logic;
+      fmt_done_i     : in  std_logic := '0';
+      fmt_refused_i  : in  std_logic := '0';
       mfm_done_i     : in  std_logic;
       mfm_count_i    : in  std_logic_vector(4 downto 0);
       -- Numero de pista que viene ESCRITO en la cabecera de los sectores. Es la medida que
@@ -83,7 +95,8 @@ architecture beh of floppy_scan is
    -- floppy_mfm no baja su done_o hasta el ciclo siguiente. Sin este estado intermedio,
    -- SC_READ veia el done_o de la pista ANTERIOR, todavia alto, y daba la pista por leida al
    -- instante con el recuento viejo. Aqui se espera a ver done_o bajo antes de esperarlo alto.
-   type t_state is (SC_IDLE, SC_WAIT_READY, SC_READ_ARM, SC_READ, SC_EVAL, SC_SEEK, SC_DONE);
+   type t_state is (SC_IDLE, SC_WAIT_READY, SC_READ_ARM, SC_READ, SC_EVAL, SC_SEEK, SC_DONE,
+                    SC_FMT_ARM, SC_FMT);   -- M4027
    signal state      : t_state := SC_IDLE;
    signal done_trk_r : unsigned(6 downto 0) := (others => '0');   -- M4021
 
@@ -100,6 +113,7 @@ architecture beh of floppy_scan is
    signal done_r     : std_logic := '0';
    signal dsk_strt_r : std_logic := '0';
    signal trk_done_r : std_logic := '0';
+   signal fmt_strt_r : std_logic := '0';   -- M4027
 
 begin
 
@@ -115,6 +129,7 @@ begin
    dsk_start_o   <= dsk_strt_r;
    done_track_o  <= std_logic_vector(done_trk_r);
    track_done_o  <= trk_done_r;
+   fmt_start_o   <= fmt_strt_r;
    pos_code_o    <= "00001" when pos_exact  = '1' else
                     "00010" when pos_double = '1' else
                     "00011";
@@ -126,6 +141,7 @@ begin
          seek_r     <= '0';
          dsk_strt_r <= '0';
          trk_done_r <= '0';
+         fmt_strt_r <= '0';
 
          if rst_i = '1' or enable_i = '0' then
             state      <= SC_IDLE;
@@ -143,15 +159,42 @@ begin
                   -- floppy_phys arranca solo con enable_i: aqui se espera a que recalibre.
                   track      <= (others => '0');
                   bad_cnt    <= (others => '0');
-                  dsk_strt_r <= '1';        -- empieza una imagen nueva
+                  -- M4027: en modo formateo no hay imagen que construir, asi que no se avisa
+                  -- a floppy_dsk. Si se avisara, borraria el buffer a 0xE5 sin necesidad y
+                  -- dejaria una imagen a medias que no corresponde a nada.
+                  if fmt_mode_i = '0' then
+                     dsk_strt_r <= '1';     -- empieza una imagen nueva
+                  end if;
                   state      <= SC_WAIT_READY;
 
                when SC_WAIT_READY =>
                   if phys_error_i = '1' then
                      state <= SC_DONE;          -- la mecanica no responde, no hay nada que leer
                   elsif phys_ready_i = '1' then
-                     restart_r <= '1';          -- empieza a contar esta pista
-                     state     <= SC_READ_ARM;
+                     if fmt_mode_i = '1' then
+                        fmt_strt_r <= '1';      -- M4027: formatear ESTA pista
+                        state      <= SC_FMT_ARM;
+                     else
+                        restart_r <= '1';       -- empieza a contar esta pista
+                        state     <= SC_READ_ARM;
+                     end if;
+                  end if;
+
+               -- M4027: mismo patron que SC_READ_ARM y por el mismo motivo - hay que ver
+               -- done_i BAJO antes de esperarlo alto, o se lee el resultado de la pista
+               -- anterior y se da por formateada al instante.
+               when SC_FMT_ARM =>
+                  if fmt_refused_i = '1' then
+                     state <= SC_DONE;          -- disquete protegido: no seguir
+                  elsif fmt_done_i = '0' then
+                     state <= SC_FMT;
+                  end if;
+
+               when SC_FMT =>
+                  if fmt_refused_i = '1' then
+                     state <= SC_DONE;
+                  elsif fmt_done_i = '1' then
+                     state <= SC_EVAL;
                   end if;
 
                when SC_READ_ARM =>
@@ -176,6 +219,9 @@ begin
                   -- hasta el siguiente)". Cierto dentro de ESTE proceso, pero trk_done_r
                   -- tambien esta registrado, asi que el consumidor ve las dos cosas a la vez -
                   -- el pulso Y la pista ya incrementada.
+                  -- M4027: todo lo que sigue es evaluacion de LECTURA. En modo formateo no
+                  -- hay recuento de sectores ni imagen que rellenar: solo se avanza de pista.
+                  if fmt_mode_i = '0' then
                   trk_done_r <= '1';
                   done_trk_r <= track;      -- M4021: la pista que se acaba de leer
 
@@ -204,6 +250,7 @@ begin
                         pos_double <= '0';
                      end if;
                   end if;
+                  end if;     -- M4027: fin de la evaluacion de lectura
 
                   if track = G_TRACKS - 1 then
                      state <= SC_DONE;

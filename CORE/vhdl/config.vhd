@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4C - Build M4026\n\n" &
+   "Status: Milestone 4C - Build M4027\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -385,7 +385,7 @@ constant OPTM_ITEMS        : string :=
    " Internal to Drive A:\n" &   -- 6   <- C_MENU_FLOPPY_A  (radio: destino del disco fisico)
    " Internal to Drive B:\n" &   -- 7   <- C_MENU_FLOPPY_B
    " Read internal floppy\n" &   -- 8   <- C_MENU_FLOPPY_TEST (accion)
-   " FORMAT track 0 !\n"    &    -- 9   <- C_MENU_FLOPPY_FMT (M4C1: DESTRUYE la pista 0)
+   " FORMAT WHOLE DISK !!\n" &    -- 9   <- C_MENU_FLOPPY_FMT (M4027: DESTRUYE EL DISQUETE ENTERO)
    " Write: density alt\n"  &    -- 10  <- C_MENU_FLOPPY_DENS (invierte DENSEL, ver floppy_phys)
    -- M4023: elige el separador de datos. Apagado = clasificador de ventanas fijas (el de
    -- siempre), encendido = DPLL. Conmutable para poder comparar A/B con el mismo disquete en

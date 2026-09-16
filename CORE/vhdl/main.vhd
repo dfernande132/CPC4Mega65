@@ -464,6 +464,9 @@ signal floppy_fmt_wgate   : std_logic_vector(31 downto 0);   -- M4026
 signal floppy_fmt_wdata   : std_logic_vector(31 downto 0);
 signal floppy_fmt_starts  : std_logic_vector(7 downto 0);
 signal floppy_fmt_refus   : std_logic_vector(7 downto 0);
+signal floppy_fmt_start   : std_logic;   -- M4027
+signal floppy_fmt_done    : std_logic;
+signal floppy_fmt_refused : std_logic;
 
 -- M4020: VOLCADO AUTONOMO A LA SD.
 --
@@ -984,6 +987,8 @@ begin
    end process;
 
    floppy_scan_done_o  <= floppy_scan_done;
+   floppy_fmt_done_o    <= floppy_fmt_done;      -- M4027
+   floppy_fmt_refused_o <= floppy_fmt_refused;
 
    -- M4019: los puertos se alimentan de las senales internas (ver la declaracion).
    floppy_is_hd_o      <= floppy_is_hd;
@@ -1250,7 +1255,8 @@ begin
 
    floppy_index_blink_o <= floppy_index_blink;
    floppy_ready_o       <= floppy_ready;
-   floppy_scan_enable   <= floppy_enable_i and not floppy_fmt_enable_i;
+   -- M4027: el secuenciador corre en LOS DOS modos; fmt_mode_i decide que hace en cada pista.
+   floppy_scan_enable   <= floppy_enable_i;
 
    ----------------------------------------------------------------------------------------------
    -- CPC4MEGA65 M4B: separador de datos MFM y lectura de campos de ID
@@ -1380,6 +1386,10 @@ begin
 
          mfm_restart_o  => floppy_mfm_restart,
          mfm_expect_o   => floppy_expect,
+         fmt_mode_i     => floppy_fmt_enable_i,
+         fmt_start_o    => floppy_fmt_start,
+         fmt_done_i     => floppy_fmt_done,
+         fmt_refused_i  => floppy_fmt_refused,
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
          mfm_id_track_i  => floppy_id_track,
@@ -1412,15 +1422,15 @@ begin
          rst_i      => reset_hard_i,
 
          enable_i   => floppy_fmt_enable_i,
-         start_i    => floppy_fmt_enable_i,   -- el propio item de menu dispara el formateo
-         track_i    => (others => '0'),       -- M4C1: solo la pista 0
+         start_i    => floppy_fmt_start,      -- M4027: un pulso por pista, desde floppy_scan
+         track_i    => floppy_cur_track,      -- M4027: el numero va al campo de ID
          ready_i    => floppy_ready,
          index_i    => floppy_index_pulse,
          wprot_i    => floppy_wprot,
 
          busy_o     => floppy_fmt_busy_o,
-         done_o     => floppy_fmt_done_o,
-         refused_o  => floppy_fmt_refused_o,
+         done_o     => floppy_fmt_done,
+         refused_o  => floppy_fmt_refused,
          wrote_full_o => floppy_fmt_full_o,
 
          f_wgate_o  => f_wgate_o,
