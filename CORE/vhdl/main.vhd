@@ -460,6 +460,10 @@ signal floppy_tlm_dtcrc   : std_logic_vector(15 downto 0);
 signal floppy_tlm_flags   : std_logic_vector(7 downto 0);
 signal floppy_tlm_pll     : std_logic_vector(15 downto 0);   -- M4024
 signal floppy_tlm_runts   : std_logic_vector(15 downto 0);   -- M4025
+signal floppy_fmt_wgate   : std_logic_vector(31 downto 0);   -- M4026
+signal floppy_fmt_wdata   : std_logic_vector(31 downto 0);
+signal floppy_fmt_starts  : std_logic_vector(7 downto 0);
+signal floppy_fmt_refus   : std_logic_vector(7 downto 0);
 
 -- M4020: VOLCADO AUTONOMO A LA SD.
 --
@@ -1340,7 +1344,11 @@ begin
          tlm_poscode_i => floppy_pos_code,
          tlm_flags_i   => floppy_tlm_flags,
          tlm_pllcells_i => floppy_tlm_pll,
-         tlm_runts_i    => floppy_tlm_runts
+         tlm_runts_i    => floppy_tlm_runts,
+         tlm_wgate_i    => floppy_fmt_wgate,
+         tlm_wdata_i    => floppy_fmt_wdata,
+         tlm_starts_i   => floppy_fmt_starts,
+         tlm_refus_i    => floppy_fmt_refus
       ); -- i_floppy_dsk
 
    ----------------------------------------------------------------------------------------------
@@ -1416,7 +1424,11 @@ begin
          wrote_full_o => floppy_fmt_full_o,
 
          f_wgate_o  => f_wgate_o,
-         f_wdata_o  => f_wdata_o
+         f_wdata_o  => f_wdata_o,
+         tlm_wgate_o  => floppy_fmt_wgate,
+         tlm_wdata_o  => floppy_fmt_wdata,
+         tlm_starts_o => floppy_fmt_starts,
+         tlm_refus_o  => floppy_fmt_refus
       ); -- i_floppy_write
 
    -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,

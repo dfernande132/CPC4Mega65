@@ -60,7 +60,24 @@ entity floppy_write is
       wrote_full_o   : out std_logic;
 
       f_wgate_o      : out std_logic;                     -- activo bajo
-      f_wdata_o      : out std_logic                      -- activo bajo, un pulso por transicion
+      f_wdata_o      : out std_logic;                     -- activo bajo, un pulso por transicion
+
+      -- M4026 TELEMETRIA DEL FORMATEO. Hasta ahora la unica salida de este modulo era el LED,
+      -- que es exactamente la situacion de la que salimos en la lectura - y que ademas aqui no
+      -- informa: el color depende de id_cpc, que lo produce floppy_scan y solo corre al LEER,
+      -- asi que justo despues de formatear siempre sale ambar, se haya escrito o no.
+      --
+      -- Estos contadores SOBREVIVEN a que se apague el item de menu (solo los borra un reset
+      -- o un formateo nuevo), asi que la lectura posterior los arrastra hasta el volcado.
+      --
+      -- Como leerlos: un formateo correcto a 250 kbps es UNA VUELTA de disco = 200 ms =
+      -- 12.800.000 ciclos a 64 MHz, con unas 50.000 transiciones. Si wgate_cyc sale muy por
+      -- debajo, la maquina de estados se recorre sin respetar la temporizacion de celda; si
+      -- sale 0, la puerta no llego a abrirse.
+      tlm_wgate_o    : out std_logic_vector(31 downto 0);  -- ciclos con WGATE abierto
+      tlm_wdata_o    : out std_logic_vector(31 downto 0);  -- transiciones emitidas
+      tlm_starts_o   : out std_logic_vector(7 downto 0);   -- formateos arrancados
+      tlm_refus_o    : out std_logic_vector(7 downto 0)    -- rechazados por proteccion
    );
 end floppy_write;
 
@@ -120,6 +137,14 @@ architecture beh of floppy_write is
    signal wgate_r  : std_logic := '1';
    signal wdata_r  : std_logic := '1';
 
+   -- M4026: telemetria del formateo
+   signal state_d    : t_state;
+   signal wdata_d    : std_logic := '1';
+   signal wgate_cyc  : unsigned(31 downto 0) := (others => '0');
+   signal wdata_cnt  : unsigned(31 downto 0) := (others => '0');
+   signal starts_cnt : unsigned(7 downto 0)  := (others => '0');
+   signal refus_cnt  : unsigned(7 downto 0)  := (others => '0');
+
    -- El pulso de indice dura UN ciclo, y la maquina de formato solo mira su estado cuando el
    -- motor de celdas esta libre (una vez cada 2048 ciclos). Muestrearlo directamente ahi
    -- perderia casi todos los pulsos, asi que se engancha en una bandera aparte.
@@ -162,6 +187,53 @@ begin
 
    f_wgate_o <= wgate_r;
    f_wdata_o <= wdata_r;
+
+   -- M4026: telemetria del formateo. Proceso APARTE del FSM a proposito: el FSM se reinicia
+   -- cuando enable_i baja (o sea al apagar el item de menu), y estos contadores tienen que
+   -- sobrevivir a eso para que la lectura posterior los pueda volcar.
+   tlm_wgate_o  <= std_logic_vector(wgate_cyc);
+   tlm_wdata_o  <= std_logic_vector(wdata_cnt);
+   tlm_starts_o <= std_logic_vector(starts_cnt);
+   tlm_refus_o  <= std_logic_vector(refus_cnt);
+
+   stats_proc : process (clk_i)
+   begin
+      if rising_edge(clk_i) then
+         state_d <= state;
+         wdata_d <= wdata_r;
+
+         if rst_i = '1' then
+            wgate_cyc  <= (others => '0');
+            wdata_cnt  <= (others => '0');
+            starts_cnt <= (others => '0');
+            refus_cnt  <= (others => '0');
+         else
+            -- Un formateo nuevo empieza de cero
+            if state_d = W_IDLE and state = W_WAIT_IDX then
+               wgate_cyc <= (others => '0');
+               wdata_cnt <= (others => '0');
+               if starts_cnt /= x"FF" then
+                  starts_cnt <= starts_cnt + 1;
+               end if;
+            end if;
+
+            if state_d /= W_REFUSED and state = W_REFUSED then
+               if refus_cnt /= x"FF" then
+                  refus_cnt <= refus_cnt + 1;
+               end if;
+            end if;
+
+            if wgate_r = '0' and wgate_cyc /= x"FFFFFFFF" then
+               wgate_cyc <= wgate_cyc + 1;
+            end if;
+
+            -- Flanco de bajada de WDATA = una transicion de flujo escrita
+            if wdata_r = '0' and wdata_d = '1' and wdata_cnt /= x"FFFFFFFF" then
+               wdata_cnt <= wdata_cnt + 1;
+            end if;
+         end if;
+      end if;
+   end process stats_proc;
    busy_o    <= '0' when (state = W_IDLE or state = W_DONE or state = W_REFUSED) else '1';
    done_o    <= '1' when state = W_DONE else '0';
    refused_o <= '1' when state = W_REFUSED else '0';

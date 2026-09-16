@@ -90,6 +90,11 @@ entity floppy_dsk is
       tlm_flags_i    : in  std_logic_vector(7 downto 0);
       tlm_pllcells_i : in  std_logic_vector(15 downto 0);   -- M4024
       tlm_runts_i    : in  std_logic_vector(15 downto 0);   -- M4025
+      -- M4026: telemetria del FORMATEO, arrastrada hasta la siguiente lectura
+      tlm_wgate_i    : in  std_logic_vector(31 downto 0);
+      tlm_wdata_i    : in  std_logic_vector(31 downto 0);
+      tlm_starts_i   : in  std_logic_vector(7 downto 0);
+      tlm_refus_i    : in  std_logic_vector(7 downto 0);
 
       -- BUILD DE CONTROL C1: cuantos bytes de DATOS se han llegado a depositar en el buffer.
       -- Es el eslabon sin validar de toda la cadena: sabemos que la lectura MFM es exacta
@@ -456,10 +461,21 @@ begin
                      -- pulso espurio esta muerta.
                      when 22     => data_r <= tlm_runts_i(7 downto 0);
                      when 23     => data_r <= tlm_runts_i(15 downto 8);
+                     -- M4026: formateo. 0x4C..0x53 los dos contadores de 32 bits.
+                     when 24     => data_r <= tlm_wgate_i(7 downto 0);
+                     when 25     => data_r <= tlm_wgate_i(15 downto 8);
+                     when 26     => data_r <= tlm_wgate_i(23 downto 16);
+                     when 27     => data_r <= tlm_wgate_i(31 downto 24);
+                     when 28     => data_r <= tlm_wdata_i(7 downto 0);
+                     when 29     => data_r <= tlm_wdata_i(15 downto 8);
+                     when 30     => data_r <= tlm_wdata_i(23 downto 16);
+                     when 31     => data_r <= tlm_wdata_i(31 downto 24);
+                     when 32     => data_r <= tlm_starts_i;
+                     when 33     => data_r <= tlm_refus_i;
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 23 then
+                  if hdr_idx = 33 then
                      -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
                      -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
                      -- nonce y los contadores se acumulan. El volcado B de M4023 salio con
