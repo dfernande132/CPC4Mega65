@@ -147,6 +147,47 @@ flags, `Amstrad.sv:732-780` and `959-960`), because this port instantiates
 `Amstrad_motherboard` directly and never uses `Amstrad.sv`. That is new code on our side, not
 a modification of a MiSTer file, but it needs re-checking against upstream in the same way.
 
+### `rtl/u765/u765.sv`: track-info cache invalidation from outside (`tinfo_flush`) and a state readout (Milestone 4, 2026-09-17)
+
+**Why**: this port rewrites the mounted disk image **in RAM, behind the module's back** -
+`CORE/vhdl/floppy_dsk.vhd` fills the mount buffer with an image built from the physical
+floppy - and `u765` caches the per-track sector list (`i_secinfo_valid` /
+`image_trackinfo_dirty`), invalidating it only when an image is mounted. Without telling it,
+it keeps using the sector list of the **previous** image. A real CPC `.dsk` stores its
+sectors in physical, interleaved order (Bruce Lee: `C1 C6 C2 C7 C3 C8 C4 C9 C5`) while we
+place ours in logical order, so the result is a **fixed permutation**: some directory entries
+correct and the rest garbage, identical on every attempt.
+
+**What changed** (two small additions, no state machine touched):
+
+* New input `tinfo_flush`. The request is **latched** into `tinfo_flush_pend` and applied
+  only while `!tinfo_lock && state == COMMAND_IDLE`, after which
+  `image_trackinfo_dirty` is set and `i_secinfo_valid` cleared - the same path the module
+  itself uses when changing track, so it cannot deadlock.
+* New output `dbg_state` (16 bits, registered): `image_ready`, `i_scan_lock`,
+  `tinfo_lock`, idle, `image_edsk`, `image_trackinfo_dirty`, the pending request,
+  `image_scan_state` for both units and `i_secinfo_valid`. Purely an observation surface;
+  nothing reads it inside the module.
+
+**Why the latch is not stylistic.** The first attempt (build M4015) drove the invalidation
+straight in and **held it for ~4 us** from outside. That gave `Read fail` with an EDSK
+mounted and, in M4016, hung even the case that previously worked: holding it restarts
+sequences that are in flight. The mechanism was right, the delivery was not.
+
+Note also that the first attempt looked wrong for a second reason that had nothing to do with
+this file: our own track-0 header was being written one slot late (`floppy_scan.vhd`, fixed
+in M4021), so forcing `u765` to read our headers exposed a header full of `0xE5`. Both
+causes had to be closed before this could work.
+
+**What deliberately did NOT change**: `img_mounted` handling, the mount scan, the offsets
+table and everything about `image_edsk`. Simulating a fresh mount by pulsing `img_mounted`
+was tried (build M4014) and **hung the drive**: `image_ready` stayed 0 and AMSDOS retried
+forever with the motor spinning. That is still unexplained and is deliberately not attempted
+here.
+
+When updating from a newer upstream `u765.sv`: re-apply both additions. If upstream ever
+grows its own way of signalling "the image changed underneath you", drop this exception and
+use theirs.
 ### `rtl/crt_filter.v`: NOT modified - an analog-framing change was tried and reverted (2026-09-06)
 
 Recorded here so nobody re-derives it. `blankgen`'s line raster is genuinely lopsided: with

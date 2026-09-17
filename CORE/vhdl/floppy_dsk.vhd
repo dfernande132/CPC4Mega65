@@ -90,6 +90,7 @@ entity floppy_dsk is
       tlm_flags_i    : in  std_logic_vector(7 downto 0);
       tlm_pllcells_i : in  std_logic_vector(15 downto 0);   -- M4024
       tlm_runts_i    : in  std_logic_vector(15 downto 0);   -- M4025
+      tlm_u765_i     : in  std_logic_vector(15 downto 0);   -- M4028: estado interno del u765
       -- M4026: telemetria del FORMATEO, arrastrada hasta la siguiente lectura
       tlm_wgate_i    : in  std_logic_vector(31 downto 0);
       tlm_wdata_i    : in  std_logic_vector(31 downto 0);
@@ -472,10 +473,14 @@ begin
                      when 31     => data_r <= tlm_wdata_i(31 downto 24);
                      when 32     => data_r <= tlm_starts_i;
                      when 33     => data_r <= tlm_refus_i;
+                     -- M4028: estado del u765 en 0x56..0x57, fotografiado 3 s despues de
+                     -- terminar el recorrido para que este ya asentado.
+                     when 34     => data_r <= tlm_u765_i(7 downto 0);
+                     when 35     => data_r <= tlm_u765_i(15 downto 8);
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 33 then
+                  if hdr_idx = 35 then
                      -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
                      -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
                      -- nonce y los contadores se acumulan. El volcado B de M4023 salio con

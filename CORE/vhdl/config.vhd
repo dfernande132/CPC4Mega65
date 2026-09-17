@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4C - Build M4027\n\n" &
+   "Status: Milestone 4D - Build M4028\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &

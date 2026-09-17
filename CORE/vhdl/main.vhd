@@ -468,6 +468,22 @@ signal floppy_fmt_start   : std_logic;   -- M4027
 signal floppy_fmt_done    : std_logic;
 signal floppy_fmt_refused : std_logic;
 
+-- M4028: invalidacion de la cache de pista del u765, y retardo del volcado.
+--
+-- El pulso es de UN ciclo: dentro del u765 la peticion se latchea y se aplica sola cuando el
+-- modulo esta en reposo. Eso es lo que le faltaba a M4015, que la sostenia ~4 us desde fuera
+-- y pisaba secuencias en vuelo.
+--
+-- Y el volcado se retrasa 3 s respecto al fin del recorrido: asi la telemetria captura el
+-- estado del u765 YA ASENTADO despues de la invalidacion, no el del instante en que termina
+-- de leerse la ultima pista. Sin esto, el instrumento mediria el momento equivocado.
+constant C_TLM_DELAY      : natural := 192_000_000;   -- 3 s a 64 MHz
+signal scan_done_d        : std_logic := '0';
+signal tinfo_flush_r      : std_logic := '0';
+signal tlm_dly_cnt        : natural range 0 to C_TLM_DELAY := 0;
+signal scan_done_dly      : std_logic := '0';
+signal u765_dbg           : std_logic_vector(15 downto 0);
+
 -- M4020: VOLCADO AUTONOMO A LA SD.
 --
 -- El problema practico: para que el Shell escriba la imagen a la tarjeta hace falta que la
@@ -987,6 +1003,27 @@ begin
    end process;
 
    floppy_scan_done_o  <= floppy_scan_done;
+
+   -- M4028: ver el comentario en las declaraciones.
+   tinfo_proc : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         tinfo_flush_r <= '0';            -- pulso de un ciclo
+         scan_done_d   <= floppy_scan_done;
+
+         if floppy_scan_done = '1' and scan_done_d = '0' then
+            tinfo_flush_r <= '1';         -- imagen nueva: que el u765 relea las cabeceras
+            tlm_dly_cnt   <= C_TLM_DELAY;
+            scan_done_dly <= '0';
+         elsif tlm_dly_cnt /= 0 then
+            tlm_dly_cnt <= tlm_dly_cnt - 1;
+         elsif floppy_scan_done = '1' then
+            scan_done_dly <= '1';         -- 3 s despues: ya se puede fotografiar el estado
+         else
+            scan_done_dly <= '0';
+         end if;
+      end if;
+   end process tinfo_proc;
    floppy_fmt_done_o    <= floppy_fmt_done;      -- M4027
    floppy_fmt_refused_o <= floppy_fmt_refused;
 
@@ -1013,13 +1050,13 @@ begin
    dump_proc : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
-         dump_scan_d <= floppy_scan_done;
+         dump_scan_d <= scan_done_dly;
 
          if floppy_dsk_start = '1' then
             dump_done <= '0';                    -- recorrido nuevo, volcado nuevo
             dump_req  <= '0';
             dump_tmo  <= 0;
-         elsif floppy_scan_done = '1' and dump_scan_d = '0' and dump_done = '0' then
+         elsif scan_done_dly = '1' and dump_scan_d = '0' and dump_done = '0' then
             dump_req  <= '1';
             dump_done <= '1';
             dump_tmo  <= C_DUMP_TMO;
@@ -1122,6 +1159,8 @@ begin
          dout         => u765_dout,
 
          -- Lado "SD config": dominio del core, vdrives ya lo entrega sincronizado
+         tinfo_flush  => tinfo_flush_r,
+         dbg_state    => u765_dbg,
          img_mounted  => main_img_mounted_i,
          img_wp       => main_img_readonly_i,
          img_size     => main_img_size_i,
@@ -1341,7 +1380,7 @@ begin
          wr_code_o     => floppy_wr_code_o,
 
          -- M4019 telemetria
-         finish_i      => floppy_scan_done,
+         finish_i      => scan_done_dly,
          tlm_seen_i    => floppy_tlm_seen,
          tlm_revs_i    => floppy_tlm_revs,
          tlm_idcrc_i   => floppy_tlm_idcrc,
@@ -1351,6 +1390,7 @@ begin
          tlm_flags_i   => floppy_tlm_flags,
          tlm_pllcells_i => floppy_tlm_pll,
          tlm_runts_i    => floppy_tlm_runts,
+         tlm_u765_i     => u765_dbg,
          tlm_wgate_i    => floppy_fmt_wgate,
          tlm_wdata_i    => floppy_fmt_wdata,
          tlm_starts_i   => floppy_fmt_starts,
