@@ -484,6 +484,36 @@ signal tlm_dly_cnt        : natural range 0 to C_TLM_DELAY := 0;
 signal scan_done_dly      : std_logic := '0';
 signal u765_dbg           : std_logic_vector(15 downto 0);
 
+-- M4030 EXPERIMENTO. Reproduce a proposito el escenario de M4014 -inyectar un montaje falso
+-- al u765 para que acepte nuestra imagen sintetizada- pero esta vez CON EL INSTRUMENTO
+-- PUESTO. Alli colgaba la unidad (image_ready a 0 para siempre, AMSDOS reintentando con el
+-- motor girando) y nunca se supo en que punto se paraba el re-escaneo.
+--
+-- Se hace con un fichero MONTADO a proposito, aunque el objetivo final sea no necesitarlo:
+-- sin fichero no hay volcado, porque FLUSH_CACHE necesita un manejador, y nos quedariamos
+-- sin instrumento justo cuando hace falta. Primero entender, despues quitar el fichero.
+--
+-- ESTA BUILD ROMPE EL CAMINO QUE FUNCIONA. Es un experimento, no una mejora: para trabajar,
+-- volver a M4029 (commit 56acb18).
+constant C_IMG_SIZE       : natural := 194816;     -- 256 + 40 x 4864
+constant C_REMOUNT_CYC    : natural := 63;         -- ~1 us, de sobra para que se vea el flanco
+signal remount_cnt        : natural range 0 to C_REMOUNT_CYC := 0;
+signal remount            : std_logic := '0';
+signal u765_img_mounted   : std_logic_vector(1 downto 0);
+signal u765_img_size      : std_logic_vector(31 downto 0);
+
+-- M4031: dos guardas para el volcado automatico, que hasta ahora se disparaba siempre y
+-- habia causado tres daños distintos:
+--   1. Sobrescribia la imagen montada (el Shell vuelca el buffer ENTERO sobre el fichero).
+--   2. Estampaba la telemetria sobre la cabecera de un EDSK, que ahi es la tabla de tamaños
+--      de pista, dejandolo inservible.
+--   3. Con NADA montado, FLUSH_CACHE aborta con ERR_FATAL_FZERO porque el manejador de
+--      fichero vale cero (shell.asm:1208). Encontrado por el usuario al formatear en limpio.
+-- Ahora solo se dispara si la unidad destino ha llegado a montarse de verdad Y si venimos de
+-- una LECTURA, no de un formateo.
+signal img_ever_mnt       : std_logic_vector(1 downto 0) := "00";
+signal read_armed         : std_logic := '0';
+
 -- M4020: VOLCADO AUTONOMO A LA SD.
 --
 -- El problema practico: para que el Shell escriba la imagen a la tarjeta hace falta que la
@@ -1011,16 +1041,28 @@ begin
          tinfo_flush_r <= '0';            -- pulso de un ciclo
          scan_done_d   <= floppy_scan_done;
 
+         -- Al terminar el recorrido: invalidar la cache, inyectar el montaje falso, y armar
+         -- la cuenta atras de 3 s para fotografiar el estado ya asentado.
          if floppy_scan_done = '1' and scan_done_d = '0' then
             tinfo_flush_r <= '1';         -- imagen nueva: que el u765 relea las cabeceras
+            remount       <= '1';         -- M4030: montaje falso (EXPERIMENTO)
+            remount_cnt   <= C_REMOUNT_CYC;
             tlm_dly_cnt   <= C_TLM_DELAY;
             scan_done_dly <= '0';
-         elsif tlm_dly_cnt /= 0 then
-            tlm_dly_cnt <= tlm_dly_cnt - 1;
-         elsif floppy_scan_done = '1' then
-            scan_done_dly <= '1';         -- 3 s despues: ya se puede fotografiar el estado
          else
-            scan_done_dly <= '0';
+            if remount_cnt /= 0 then
+               remount_cnt <= remount_cnt - 1;
+            else
+               remount <= '0';
+            end if;
+
+            if tlm_dly_cnt /= 0 then
+               tlm_dly_cnt <= tlm_dly_cnt - 1;
+            elsif floppy_scan_done = '1' then
+               scan_done_dly <= '1';      -- 3 s despues: ya se puede fotografiar
+            else
+               scan_done_dly <= '0';
+            end if;
          end if;
       end if;
    end process tinfo_proc;
@@ -1032,6 +1074,14 @@ begin
    floppy_bad_tracks_o <= floppy_bad_trk;
    floppy_pos_code_o   <= floppy_pos_code;
    floppy_id_is_cpc_o  <= floppy_id_cpc;
+
+   -- M4030: el pulso se inyecta SOLO en la unidad destino de la disquetera fisica. Y durante
+   -- el pulso hay que presentar NUESTRO tamano, porque u765 captura img_size en ese mismo
+   -- flanco: es lo que le hace reconstruir la tabla con 40 pistas de 4864 bytes.
+   u765_img_mounted(0) <= main_img_mounted_i(0) or (remount and not floppy_tgt_b_i);
+   u765_img_mounted(1) <= main_img_mounted_i(1) or (remount and     floppy_tgt_b_i);
+   u765_img_size       <= std_logic_vector(to_unsigned(C_IMG_SIZE, 32)) when remount = '1'
+                          else main_img_size_i;
 
    floppy_tlm_flags <= "000" & dpll_en_i & floppy_scan_done & floppy_density_i &
                        floppy_is_hd & floppy_id_cpc;
@@ -1052,11 +1102,22 @@ begin
       if rising_edge(clk_main_i) then
          dump_scan_d <= scan_done_dly;
 
+         -- M4031: recordar si la unidad ha llegado a montarse de verdad alguna vez
+         for i in 0 to 1 loop
+            if main_img_mounted_i(i) = '1' and main_img_size_i /= x"00000000" then
+               img_ever_mnt(i) <= '1';
+            end if;
+         end loop;
+
          if floppy_dsk_start = '1' then
-            dump_done <= '0';                    -- recorrido nuevo, volcado nuevo
-            dump_req  <= '0';
-            dump_tmo  <= 0;
-         elsif scan_done_dly = '1' and dump_scan_d = '0' and dump_done = '0' then
+            dump_done  <= '0';                   -- recorrido nuevo, volcado nuevo
+            dump_req   <= '0';
+            dump_tmo   <= 0;
+            read_armed <= '1';                   -- M4031: venimos de una LECTURA
+         elsif scan_done_dly = '1' and dump_scan_d = '0' and dump_done = '0'
+               and read_armed = '1'
+               and ((floppy_tgt_b_i = '0' and img_ever_mnt(0) = '1') or
+                    (floppy_tgt_b_i = '1' and img_ever_mnt(1) = '1')) then
             dump_req  <= '1';
             dump_done <= '1';
             dump_tmo  <= C_DUMP_TMO;
@@ -1080,8 +1141,8 @@ begin
    begin
       if rising_edge(clk_main_i) then
          for i in 0 to 1 loop
-            if main_img_mounted_i(i) = '1' then
-               if main_img_size_i = x"00000000" then
+            if u765_img_mounted(i) = '1' then
+               if u765_img_size = x"00000000" then
                   u765_ready(i) <= '0';
                else
                   u765_ready(i) <= '1';
@@ -1161,9 +1222,9 @@ begin
          -- Lado "SD config": dominio del core, vdrives ya lo entrega sincronizado
          tinfo_flush  => tinfo_flush_r,
          dbg_state    => u765_dbg,
-         img_mounted  => main_img_mounted_i,
+         img_mounted  => u765_img_mounted,
          img_wp       => main_img_readonly_i,
-         img_size     => main_img_size_i,
+         img_size     => u765_img_size,
 
          -- Lado "SD block": generado en dominio core, sincronizado justo debajo
          sd_lba       => u765_sd_lba,
