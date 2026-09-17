@@ -230,7 +230,16 @@ begin
    main_proc : process (clk_i)
       variable slot : integer range 0 to 15;
       variable fld  : integer range 0 to 7;
-      variable tix  : integer range 0 to 31;
+      -- M4029: ERA 0 to 31 Y EL BLOQUE YA LLEGA A 35. Al desbordarse, los indices 32..35
+      -- envolvian a 0..3 y devolvian las letras de "CPCTLM" en vez de los contadores:
+      --   0x54 "formateos arrancados" leia 'C' = 67
+      --   0x55 "rechazados"           leia 'P' = 80
+      --   0x56/0x57 estado del u765   leian 'C','T' = 0x5443
+      -- O sea que esos cuatro bytes eran BASURA en M4026..M4028, y de ahi el bit alto que no
+      -- cuadraba. Los demas campos (hasta 0x53) si estaban dentro de rango y son validos.
+      -- Leccion: un instrumento tambien necesita comprobarse, y aqui el aviso estaba delante
+      -- (un bit declarado constante a cero salia a uno) y se tardo en tirar del hilo.
+      variable tix  : integer range 0 to 63;
    begin
       if rising_edge(clk_i) then
          we_r <= '0';
