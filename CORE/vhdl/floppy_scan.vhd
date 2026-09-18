@@ -52,6 +52,15 @@ entity floppy_scan is
       fmt_start_o    : out std_logic;
       fmt_done_i     : in  std_logic := '0';
       fmt_refused_i  : in  std_logic := '0';
+      -- M4034: MODO COPIA. Es el modo formateo con dos anadidos, porque lo que cambia no es el
+      -- recorrido sino de donde salen los bytes:
+      --   fmt_hold_i  '1' = todavia no arranques el escritor en esta pista (el que copia esta
+      --               leyendo del buffer la cabecera de pista del .dsk para saber que IDs
+      --               escribir). Sin esto habria que duplicar el secuenciador solo para meter
+      --               un paso de preparacion por pista.
+      --   trk_last_i  ultima pista del recorrido. Un .dsk de CPC puede tener 42 pistas, no 40.
+      fmt_hold_i     : in  std_logic := '0';
+      trk_last_i     : in  std_logic_vector(6 downto 0) := std_logic_vector(to_unsigned(G_TRACKS - 1, 7));
       mfm_done_i     : in  std_logic;
       mfm_count_i    : in  std_logic_vector(4 downto 0);
       -- Numero de pista que viene ESCRITO en la cabecera de los sectores. Es la medida que
@@ -172,8 +181,13 @@ begin
                      state <= SC_DONE;          -- la mecanica no responde, no hay nada que leer
                   elsif phys_ready_i = '1' then
                      if fmt_mode_i = '1' then
-                        fmt_strt_r <= '1';      -- M4027: formatear ESTA pista
-                        state      <= SC_FMT_ARM;
+                        -- M4034: en modo copia, el que copia necesita leer del buffer la
+                        -- cabecera de pista ANTES de que se abra WGATE. Mientras la tiene
+                        -- sujeta no se arranca: la cabeza ya esta colocada, no corre prisa.
+                        if fmt_hold_i = '0' then
+                           fmt_strt_r <= '1';      -- M4027: formatear ESTA pista
+                           state      <= SC_FMT_ARM;
+                        end if;
                      else
                         restart_r <= '1';       -- empieza a contar esta pista
                         state     <= SC_READ_ARM;
@@ -252,7 +266,7 @@ begin
                   end if;
                   end if;     -- M4027: fin de la evaluacion de lectura
 
-                  if track = G_TRACKS - 1 then
+                  if track >= unsigned(trk_last_i) then   -- M4034
                      state <= SC_DONE;
                   else
                      track  <= track + 1;

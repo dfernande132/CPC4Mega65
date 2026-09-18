@@ -74,6 +74,27 @@ entity floppy_write is
       -- 12.800.000 ciclos a 64 MHz, con unas 50.000 transiciones. Si wgate_cyc sale muy por
       -- debajo, la maquina de estados se recorre sin respetar la temporizacion de celda; si
       -- sale 0, la puerta no llego a abrirse.
+      -- CPC4MEGA65 M4034: MODO ORIGEN EXTERNO.
+      --
+      -- Con src_en_i a '0' este modulo se comporta EXACTAMENTE como hasta ahora: formatea con
+      -- identificadores C1..C9 y sectores de 0xE5. Con src_en_i a '1' los identificadores y los
+      -- datos vienen de fuera, que es lo que convierte al formateador en copiador: la
+      -- temporizacion, los huecos, los sincronismos y los CRC -lo que ya esta probado en
+      -- hardware con 40 pistas- no cambian ni una celda.
+      --
+      -- Presupuesto de tiempo: un byte son 16 celdas de 2 us = 32 us = 2048 ciclos a 64 MHz, y
+      -- una lectura de BRAM es 1 ciclo. La direccion va por delante miles de ciclos, asi que no
+      -- hace falta ni peticion ni acuse: basta con presentar el dato.
+      src_en_i       : in  std_logic := '0';
+      src_nsec_i     : in  std_logic_vector(4 downto 0) := (others => '0');  -- sectores de ESTA pista
+      src_id_c_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_id_h_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_id_r_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_id_n_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_data_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_sec_o      : out std_logic_vector(3 downto 0);   -- sector en curso: elige el ID
+      src_off_o      : out std_logic_vector(9 downto 0);   -- byte dentro del sector, 0..511
+
       tlm_wgate_o    : out std_logic_vector(31 downto 0);  -- ciclos con WGATE abierto
       tlm_wdata_o    : out std_logic_vector(31 downto 0);  -- transiciones emitidas
       tlm_starts_o   : out std_logic_vector(7 downto 0);   -- formateos arrancados
@@ -152,6 +173,11 @@ architecture beh of floppy_write is
 
    -- Bytes emitidos en el formateo en curso. Una pista entera son ~6250 a 250 kbps.
    signal byte_cnt : unsigned(13 downto 0) := (others => '0');
+
+   -- M4034: desplazamiento dentro del sector para el modo origen externo. W_DATA ya lleva un
+   -- contador (cnt) pero cuenta HACIA ATRAS, y la direccion del buffer tiene que ir hacia
+   -- delante; se lleva aparte en vez de invertir el que ya funciona.
+   signal dat_off  : natural range 0 to 511 := 0;
 
    function f_crc16(crc_in : std_logic_vector(15 downto 0);
                     data   : std_logic_vector(7 downto 0)) return std_logic_vector is
@@ -238,6 +264,11 @@ begin
    done_o    <= '1' when state = W_DONE else '0';
    refused_o <= '1' when state = W_REFUSED else '0';
    wrote_full_o <= '1' when byte_cnt > 5000 else '0';
+
+   -- M4034: el modulo dice en todo momento QUE byte necesita. El que copia solo tiene que
+   -- traducirlo a direccion del buffer de montaje y presentar el dato.
+   src_sec_o <= std_logic_vector(to_unsigned(sec_idx, 4));
+   src_off_o <= std_logic_vector(to_unsigned(dat_off, 10));
 
    ------------------------------------------------------------------------------------------
    -- Motor de celdas: saca 16 celdas a 2us cada una, con un pulso por celda a '1'
@@ -395,25 +426,43 @@ begin
                            state <= W_ID_C;
 
                         when W_ID_C =>
-                           nxt := "0" & track_i;
+                           if src_en_i = '1' then
+                              nxt := src_id_c_i;
+                           else
+                              nxt := "0" & track_i;
+                           end if;
                            load_val <= nxt; load_req <= '1';
                            crc <= f_crc16(crc, nxt);
                            state <= W_ID_H;
 
                         when W_ID_H =>
-                           load_val <= x"00"; load_req <= '1';    -- cara 0
-                           crc <= f_crc16(crc, x"00");
+                           if src_en_i = '1' then
+                              load_val <= src_id_h_i; load_req <= '1';
+                              crc <= f_crc16(crc, src_id_h_i);
+                           else
+                              load_val <= x"00"; load_req <= '1';    -- cara 0
+                              crc <= f_crc16(crc, x"00");
+                           end if;
                            state <= W_ID_R;
 
                         when W_ID_R =>
-                           nxt := std_logic_vector(to_unsigned(G_FIRST_ID + sec_idx, 8));
+                           if src_en_i = '1' then
+                              nxt := src_id_r_i;
+                           else
+                              nxt := std_logic_vector(to_unsigned(G_FIRST_ID + sec_idx, 8));
+                           end if;
                            load_val <= nxt; load_req <= '1';
                            crc <= f_crc16(crc, nxt);
                            state <= W_ID_N;
 
                         when W_ID_N =>
-                           load_val <= x"02"; load_req <= '1';    -- N=2 -> 512 bytes
-                           crc <= f_crc16(crc, x"02");
+                           if src_en_i = '1' then
+                              load_val <= src_id_n_i; load_req <= '1';
+                              crc <= f_crc16(crc, src_id_n_i);
+                           else
+                              load_val <= x"02"; load_req <= '1';    -- N=2 -> 512 bytes
+                              crc <= f_crc16(crc, x"02");
+                           end if;
                            cnt <= 1; state <= W_ID_CRC;
 
                         when W_ID_CRC =>
@@ -441,13 +490,23 @@ begin
                            else cnt <= cnt - 1; end if;
 
                         when W_DAM_M =>
+                           dat_off <= 0;                        -- M4034
                            load_val <= C_MARK_DAT; load_req <= '1';
                            crc <= f_crc16(crc, C_MARK_DAT);
                            cnt <= C_SECSZ - 1; state <= W_DATA;
 
                         when W_DATA =>
-                           load_val <= C_FILLER; load_req <= '1';
-                           crc <= f_crc16(crc, C_FILLER);
+                           -- M4034: en modo copia el byte sale del buffer de montaje.
+                           if src_en_i = '1' then
+                              load_val <= src_data_i; load_req <= '1';
+                              crc <= f_crc16(crc, src_data_i);
+                           else
+                              load_val <= C_FILLER; load_req <= '1';
+                              crc <= f_crc16(crc, C_FILLER);
+                           end if;
+                           if dat_off < 511 then
+                              dat_off <= dat_off + 1;
+                           end if;
                            if cnt = 0 then cnt <= 1; state <= W_DAT_CRC;
                            else cnt <= cnt - 1; end if;
 
@@ -460,7 +519,8 @@ begin
                         when W_GAP3 =>
                            load_val <= C_GAP; load_req <= '1';
                            if cnt = 0 then
-                              if sec_idx = G_SECTORS - 1 then
+                              if (src_en_i = '0' and sec_idx = G_SECTORS - 1) or
+                                 (src_en_i = '1' and sec_idx + 1 >= unsigned(src_nsec_i)) then
                                  state <= W_GAP4B;
                               else
                                  sec_idx <= sec_idx + 1;

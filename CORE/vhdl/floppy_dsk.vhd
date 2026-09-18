@@ -94,6 +94,17 @@ entity floppy_dsk is
       -- M4026: telemetria del FORMATEO, arrastrada hasta la siguiente lectura
       tlm_wgate_i    : in  std_logic_vector(31 downto 0);
       tlm_wdata_i    : in  std_logic_vector(31 downto 0);
+      -- M4033: mapa de pistas que el CPC ha ESCRITO en la imagen desde la ultima lectura
+      -- fisica. Lo construye main.vhd a partir de las peticiones de escritura del u765.
+      -- Paso 1 de la reescritura por pistas: de momento SOLO SE MIDE, no se escribe nada.
+      tlm_dirty_i    : in  std_logic_vector(39 downto 0);
+      -- M4034: flancos de escritura del u765 SIN filtrar, y motivo del ultimo rechazo del
+      -- copiador. El primero separa 'no hubo ninguna escritura' de 'hubo pero las mapee mal',
+      -- que en M4033 eran indistinguibles. El segundo sale por aqui porque durante una copia
+      -- este modulo no corre: se lee haciendo una LECTURA despues.
+      tlm_wredge_i   : in  std_logic_vector(15 downto 0) := (others => '0');
+      tlm_cperr_i    : in  std_logic_vector(3 downto 0)  := (others => '0');
+      tlm_cptrk_i    : in  std_logic_vector(7 downto 0)  := (others => '0');
       tlm_starts_i   : in  std_logic_vector(7 downto 0);
       tlm_refus_i    : in  std_logic_vector(7 downto 0);
 
@@ -172,6 +183,9 @@ architecture beh of floppy_dsk is
    signal uptime_ms   : unsigned(31 downto 0) := (others => '0');
    signal nonce       : unsigned(7 downto 0) := (others => '0');
    signal trk_written : unsigned(7 downto 0) := (others => '0');
+
+    -- M4033: mapa de pistas LEIDAS BIEN en este recorrido (los 9 sectores).
+    signal ok_map      : std_logic_vector(G_TRACKS - 1 downto 0) := (others => '0');
    signal fin_pend    : std_logic := '0';
    signal fin_d       : std_logic := '0';   -- finish_i es un NIVEL, no un pulso
 
@@ -264,6 +278,7 @@ begin
                      wr_count    <= (others => '0');
                      nonce       <= nonce + 1;          -- M4019: cada recorrido, uno nuevo
                      trk_written <= (others => '0');
+                     ok_map      <= (others => '0');   -- M4033
                      fin_pend    <= '0';
                      state       <= DS_CLEAR;
                   end if;
@@ -344,6 +359,14 @@ begin
                      t_idcrc  <= tlm_idcrc_i;
                      t_dtcrc  <= tlm_dtcrc_i;
                      t_track  <= done_track_i;   -- M4021
+                      -- M4033: pista completa = los G_SECTORS sectores con CRC bueno. Es el
+                      -- permiso de escritura de la reescritura por pistas: una pista que no se
+                      -- pudo leer entera no se puede reescribir, porque la imagen no tiene su
+                      -- contenido verdadero y la grabariamos con huecos.
+                      if unsigned(sect_count_i) = G_SECTORS and
+                         unsigned(done_track_i) < G_TRACKS then
+                         ok_map(to_integer(unsigned(done_track_i))) <= '1';
+                      end if;
                      hdr_idx  <= (others => '0');
                      state    <= DS_TRKHDR;
                   elsif fin_pend = '1' then
@@ -449,7 +472,7 @@ begin
                   tix    := to_integer(hdr_idx);
                   case tix is
                      when 0 to 5 => data_r <= C_TLM_SIG(tix);          -- "CPCTLM"
-                     when 6      => data_r <= x"01";                   -- version del mapa
+                     when 6      => data_r <= x"03";                   -- version del mapa (M4034)
                      when 7      => data_r <= std_logic_vector(nonce);
                      when 8      => data_r <= std_logic_vector(wr_count(7 downto 0));
                      when 9      => data_r <= std_logic_vector(wr_count(15 downto 8));
@@ -486,10 +509,32 @@ begin
                      -- terminar el recorrido para que este ya asentado.
                      when 34     => data_r <= tlm_u765_i(7 downto 0);
                      when 35     => data_r <= tlm_u765_i(15 downto 8);
+                      -- M4033, paso 1 de la reescritura por pistas: los dos mapas de 40 bits
+                      -- que deciden que se podra regrabar y que no. SOLO SE MIDEN, aqui no se
+                      -- escribe todavia ni un bit en el disquete.
+                      --   0x58..0x5C  pistas ESCRITAS por el CPC desde la ultima lectura
+                      --   0x5D..0x61  pistas LEIDAS ENTERAS en esa lectura
+                      -- La interseccion de los dos es el conjunto regrabable; una pista sucia
+                      -- que NO este en el segundo mapa hay que negarse a escribirla.
+                      when 36     => data_r <= tlm_dirty_i( 7 downto  0);
+                      when 37     => data_r <= tlm_dirty_i(15 downto  8);
+                      when 38     => data_r <= tlm_dirty_i(23 downto 16);
+                      when 39     => data_r <= tlm_dirty_i(31 downto 24);
+                      when 40     => data_r <= tlm_dirty_i(39 downto 32);
+                      when 41     => data_r <= ok_map( 7 downto  0);
+                      when 42     => data_r <= ok_map(15 downto  8);
+                      when 43     => data_r <= ok_map(23 downto 16);
+                      when 44     => data_r <= ok_map(31 downto 24);
+                      when 45     => data_r <= ok_map(39 downto 32);
+                      -- M4034, 0x62..0x65
+                      when 46     => data_r <= tlm_wredge_i(7 downto 0);
+                      when 47     => data_r <= tlm_wredge_i(15 downto 8);
+                      when 48     => data_r <= "0000" & tlm_cperr_i;
+                      when 49     => data_r <= tlm_cptrk_i;
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 35 then
+                  if hdr_idx = 49 then
                      -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
                      -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
                      -- nonce y los contadores se acumulan. El volcado B de M4023 salio con

@@ -100,6 +100,17 @@ entity main is
       floppy_buf_addr_o       : out std_logic_vector(17 downto 0);
       floppy_buf_data_o       : out std_logic_vector(7 downto 0);
       floppy_buf_we_o         : out std_logic;
+      -- M4034: lectura del buffer de montaje por el lado del core. El puerto ya existia en
+      -- mega65.vhd y estaba sin usar (q_b => open); sacarlo aqui es lo que permite copiar un
+      -- .dsk al disquete fisico sin gastar ni un bloque de RAM nuevo. Llegan las DOS unidades
+      -- porque el origen de la copia es la que NO sea la disquetera fisica.
+      floppy_buf_qa_i         : in  std_logic_vector(7 downto 0) := (others => '0');
+      floppy_buf_qb_i         : in  std_logic_vector(7 downto 0) := (others => '0');
+      -- M4034: opcion de menu 'copiar disco'
+      floppy_copy_en_i        : in  std_logic := '0';
+      floppy_copy_busy_o      : out std_logic;
+      floppy_copy_done_o      : out std_logic;
+      floppy_copy_refused_o   : out std_logic;
       -- M4014: a que unidad va la disquetera fisica ('0' = A:, '1' = B:). Hace falta aqui
       -- para saber en cual de las dos hay que volver a disparar el montaje al terminar.
       floppy_tgt_b_i          : in  std_logic;
@@ -538,6 +549,58 @@ signal dump_done          : std_logic := '0';
 signal dump_scan_d        : std_logic := '0';
 constant C_DUMP_TMO       : natural := 6_400_000;    -- 100 ms de guarda
 signal dump_tmo           : natural range 0 to C_DUMP_TMO := 0;
+
+-- CPC4MEGA65 M4033: MAPA DE PISTAS SUCIAS (paso 1 de la reescritura por pistas)
+--
+-- Para poder devolver al disquete fisico lo que el CPC ha escrito hacen falta dos cosas que
+-- hasta ahora no existian en ningun sitio: saber QUE pistas ha tocado, y saber cuales de ellas
+-- se leyeron enteras (solo esas se pueden regrabar sin perder datos; una pista que no se pudo
+-- leer no esta completa en la imagen, y grabarla destruiria el original).
+--
+-- Esta build SOLO MIDE: construye los dos mapas y los saca en la telemetria. No abre WGATE.
+--
+-- De bloque de 512 bytes a numero de pista: la imagen es 256 de cabecera + 40 x 4864, y 4864
+-- no es multiplo de 512, asi que las pistas no caen en frontera de bloque y un bloque puede
+-- pisar dos pistas. En vez de dividir, se recorre la tabla sumando 4864 (40 ciclos como mucho,
+-- y las escrituras del u765 estan a milisegundos unas de otras).
+constant C_DIRTY_TRKSZ    : natural := 4864;
+signal dirty_map          : std_logic_vector(39 downto 0) := (others => '0');
+signal dirty_wr_d         : std_logic := '0';
+signal dirty_state        : natural range 0 to 1 := 0;
+signal dirty_addr         : unsigned(31 downto 0) := (others => '0');
+signal dirty_last         : unsigned(31 downto 0) := (others => '0');
+signal dirty_lim          : unsigned(31 downto 0) := (others => '0');
+signal dirty_trk          : natural range 0 to 63 := 0;
+signal dirty_snap         : std_logic_vector(39 downto 0) := (others => '0');
+
+-- CPC4MEGA65 M4034: copiar un .dsk al disquete fisico
+signal copy_buf_addr      : std_logic_vector(17 downto 0);
+signal copy_buf_q         : std_logic_vector(7 downto 0);
+signal copy_hold          : std_logic;
+signal copy_trk_last      : std_logic_vector(6 downto 0);
+signal copy_busy          : std_logic;
+signal copy_done          : std_logic;
+signal copy_refused       : std_logic;
+signal copy_err           : std_logic_vector(3 downto 0);
+signal copy_tlm_trk       : std_logic_vector(7 downto 0);
+signal copy_w_nsec        : std_logic_vector(4 downto 0);
+signal copy_w_id_c        : std_logic_vector(7 downto 0);
+signal copy_w_id_h        : std_logic_vector(7 downto 0);
+signal copy_w_id_r        : std_logic_vector(7 downto 0);
+signal copy_w_id_n        : std_logic_vector(7 downto 0);
+signal copy_w_data        : std_logic_vector(7 downto 0);
+signal wr_sec             : std_logic_vector(3 downto 0);
+signal wr_off             : std_logic_vector(9 downto 0);
+signal dsk_buf_addr       : std_logic_vector(17 downto 0);
+signal fmt_hold           : std_logic;
+signal scan_trk_last      : std_logic_vector(6 downto 0);
+
+-- M4034: contador CRUDO de flancos de escritura del u765, sin filtrar por pista ni por unidad.
+-- Existe para que el volcado distinga 'no hubo ninguna escritura' de 'hubo escrituras pero las
+-- mapee mal', que en M4033 eran indistinguibles: el mapa salia a cero en los dos casos. Es la
+-- misma leccion de M4029 - un instrumento que no separa dos causas no es un instrumento.
+signal wr_edges           : unsigned(15 downto 0) := (others => '0');
+signal wr_any_d           : std_logic := '0';
 
 -- M4018 fue una build de MEDIDA: retrasaba artificialmente la subida del acuse que ve el u765
 -- para averiguar cuanta latencia por bloque tolera la cadena, que es LA pregunta que decidia
@@ -1097,6 +1160,64 @@ begin
    dump_sd_wr(0) <= u765_sd_wr(0) or (dump_req and not floppy_tgt_b_i);
    dump_sd_wr(1) <= u765_sd_wr(1) or (dump_req and     floppy_tgt_b_i);
 
+   -- M4033: mapa de pistas que el CPC ha escrito. Se pone a cero al empezar cada lectura
+   -- fisica, que es el momento en que la imagen y el disquete vuelven a ser iguales.
+   dirty_proc : process (clk_main_i)
+      variable wr_v : std_logic;
+   begin
+      if rising_edge(clk_main_i) then
+         if floppy_tgt_b_i = '0' then
+            wr_v := u765_sd_wr(0);
+         else
+            wr_v := u765_sd_wr(1);
+         end if;
+         dirty_wr_d <= wr_v;
+
+         if floppy_dsk_start = '1' then
+            -- El volcado de telemetria se escribe al FINAL de un recorrido, asi que si aqui
+            -- solo se borrara, el mapa que se publica seria siempre cero. Se fotografia antes
+            -- de borrar: lo que se publica es 'lo que el CPC escribio entre la lectura
+            -- anterior y esta'. Para verlo: leer el disco, guardar algo desde el CPC, y leer
+            -- otra vez; el segundo volcado lleva la foto.
+            dirty_snap  <= dirty_map;
+            dirty_map   <= (others => '0');
+            dirty_state <= 0;
+         else
+            case dirty_state is
+
+               when 0 =>
+                  -- Flanco de subida de la peticion: el protocolo de vdrives sostiene el nivel
+                  -- hasta el acuse, asi que sin flanco se contaria la misma escritura mil veces.
+                  if wr_v = '1' and dirty_wr_d = '0' then
+                     dirty_addr  <= shift_left(unsigned(u765_sd_lba), 9);
+                     dirty_last  <= shift_left(unsigned(u765_sd_lba), 9) + 511;
+                     dirty_lim   <= to_unsigned(256 + C_DIRTY_TRKSZ, 32);
+                     dirty_trk   <= 0;
+                     dirty_state <= 1;
+                  end if;
+
+               when 1 =>
+                  if dirty_addr < dirty_lim then
+                     if dirty_trk < 40 then
+                        dirty_map(dirty_trk) <= '1';
+                     end if;
+                     -- El bloque puede acabar dentro de la pista siguiente.
+                     if dirty_last >= dirty_lim and dirty_trk < 39 then
+                        dirty_map(dirty_trk + 1) <= '1';
+                     end if;
+                     dirty_state <= 0;
+                  elsif dirty_trk = 63 then
+                     dirty_state <= 0;        -- fuera de la imagen: no es de ninguna pista
+                  else
+                     dirty_lim <= dirty_lim + C_DIRTY_TRKSZ;
+                     dirty_trk <= dirty_trk + 1;
+                  end if;
+
+            end case;
+         end if;
+      end if;
+   end process dirty_proc;
+
    dump_proc : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
@@ -1408,6 +1529,75 @@ begin
    -- CPC4MEGA65 M4B2b-ii: construccion de la imagen .DSK en el buffer
    ----------------------------------------------------------------------------------------------
 
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 M4034: copiar un .dsk al disquete fisico
+   ----------------------------------------------------------------------------------------------
+
+   -- Origen de la copia: la unidad que NO sea la disquetera fisica. Si la interna esta puesta
+   -- de A:, se copia desde B:, porque si no el origen y el destino serian el mismo sitio.
+   copy_buf_q <= floppy_buf_qb_i when floppy_tgt_b_i = '0' else floppy_buf_qa_i;
+
+   -- El bus de direcciones del buffer es uno solo. floppy_dsk lo usa para ESCRIBIR mientras se
+   -- lee el disquete; el copiador lo usa para LEER mientras se escribe. Nunca a la vez: en modo
+   -- copia floppy_scan va en modo formateo y no pulsa dsk_start.
+   floppy_buf_addr_o <= copy_buf_addr when floppy_copy_en_i = '1' else dsk_buf_addr;
+
+   -- M4034: flancos de escritura del u765, sin filtrar. Ver la declaracion.
+   wr_edge_proc : process (clk_main_i)
+      variable any_v : std_logic;
+   begin
+      if rising_edge(clk_main_i) then
+         any_v := u765_sd_wr(0) or u765_sd_wr(1);
+         wr_any_d <= any_v;
+         if floppy_dsk_start = '1' then
+            wr_edges <= (others => '0');
+         elsif any_v = '1' and wr_any_d = '0' and wr_edges /= x"FFFF" then
+            wr_edges <= wr_edges + 1;
+         end if;
+      end if;
+   end process wr_edge_proc;
+
+   i_floppy_copy : entity work.floppy_copy
+      port map (
+         clk_i       => clk_main_i,
+         rst_i       => reset_hard_i,
+
+         enable_i    => floppy_copy_en_i,
+
+         buf_addr_o  => copy_buf_addr,
+         buf_q_i     => copy_buf_q,
+
+         hold_o      => copy_hold,
+         trk_last_o  => copy_trk_last,
+         track_i     => floppy_cur_track,
+         scan_done_i => floppy_scan_done,
+
+         w_sec_i     => wr_sec,
+         w_off_i     => wr_off,
+         w_nsec_o    => copy_w_nsec,
+         w_id_c_o    => copy_w_id_c,
+         w_id_h_o    => copy_w_id_h,
+         w_id_r_o    => copy_w_id_r,
+         w_id_n_o    => copy_w_id_n,
+         w_data_o    => copy_w_data,
+
+         busy_o      => copy_busy,
+         done_o      => copy_done,
+         refused_o   => copy_refused,
+         err_code_o  => copy_err,
+         tlm_trk_o   => copy_tlm_trk
+      ); -- i_floppy_copy
+
+   -- La sujecion solo existe en modo copia. En un formateo normal no hay cabecera que leer y
+   -- floppy_scan tiene que arrancar el escritor en cuanto la cabeza este colocada.
+   fmt_hold      <= copy_hold     when floppy_copy_en_i = '1' else '0';
+   scan_trk_last <= copy_trk_last when floppy_copy_en_i = '1' else
+                    std_logic_vector(to_unsigned(39, 7));
+
+   floppy_copy_busy_o    <= copy_busy;
+   floppy_copy_done_o    <= copy_done;
+   floppy_copy_refused_o <= copy_refused;
+
    i_floppy_dsk : entity work.floppy_dsk
       generic map (
          G_CLK_HZ      => G_CLK_HZ
@@ -1432,7 +1622,7 @@ begin
          id_sector_i   => floppy_id_sector,
          id_size_i     => floppy_id_size,
 
-         buf_addr_o    => floppy_buf_addr_o,
+         buf_addr_o    => dsk_buf_addr,
          buf_data_o    => floppy_buf_data_o,
          buf_we_o      => floppy_buf_we_o,
 
@@ -1454,6 +1644,10 @@ begin
          tlm_u765_i     => u765_dbg,
          tlm_wgate_i    => floppy_fmt_wgate,
          tlm_wdata_i    => floppy_fmt_wdata,
+         tlm_dirty_i    => dirty_snap,          -- M4033
+         tlm_wredge_i   => std_logic_vector(wr_edges),   -- M4034
+         tlm_cperr_i    => copy_err,
+         tlm_cptrk_i    => copy_tlm_trk,
          tlm_starts_i   => floppy_fmt_starts,
          tlm_refus_i    => floppy_fmt_refus
       ); -- i_floppy_dsk
@@ -1491,6 +1685,8 @@ begin
          fmt_start_o    => floppy_fmt_start,
          fmt_done_i     => floppy_fmt_done,
          fmt_refused_i  => floppy_fmt_refused,
+         fmt_hold_i     => fmt_hold,        -- M4034
+         trk_last_i     => scan_trk_last,   -- M4034
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
          mfm_id_track_i  => floppy_id_track,
@@ -1533,6 +1729,18 @@ begin
          done_o     => floppy_fmt_done,
          refused_o  => floppy_fmt_refused,
          wrote_full_o => floppy_fmt_full_o,
+
+         -- M4034: modo origen externo. Con la opcion de copia apagada esto vale '0' y el
+         -- modulo formatea exactamente igual que hasta ahora.
+         src_en_i   => floppy_copy_en_i,
+         src_nsec_i => copy_w_nsec,
+         src_id_c_i => copy_w_id_c,
+         src_id_h_i => copy_w_id_h,
+         src_id_r_i => copy_w_id_r,
+         src_id_n_i => copy_w_id_n,
+         src_data_i => copy_w_data,
+         src_sec_o  => wr_sec,
+         src_off_o  => wr_off,
 
          f_wgate_o  => f_wgate_o,
          f_wdata_o  => f_wdata_o,

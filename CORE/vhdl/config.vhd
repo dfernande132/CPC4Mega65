@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4D - Build M4031\n\n" &
+   "Status: Milestone 4D - Build M4034\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -337,7 +337,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 27;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 37;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -345,8 +345,8 @@ constant OPTM_SIZE         : natural := 27;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 20;  -- alto real del menu principal: las 27 lineas de
-                                             -- OPTM_ITEMS menos las 7 del submenu HDMI.
+constant OPTM_DY           : natural := 16;  -- M4034: las 37 lineas de OPTM_ITEMS menos las 14
+                                             -- del submenu de disquetera y las 7 del de HDMI.
 
 -- CPC4MEGA65 (M1B003): menu propio. El de la plantilla traia tres items "Drive X/Y/Z" con el
 -- atributo OPTM_G_MOUNT_DRV, y con C_VDNUM=0 (sin disquetera hasta Milestone 2) el firmware
@@ -381,38 +381,53 @@ constant OPTM_ITEMS        : string :=
    " Drive A:%s\n"          &    -- 2   <- unidad 0 del u765 (primera linea OPTM_G_MOUNT_DRV)
    " Drive B:%s\n"          &    -- 3   <- unidad 1 del u765
    "\n"                     &    -- 4
-   " Swap joystick ports\n" &    -- 5   <- C_MENU_FLIP_JOYS
-   " Internal to Drive A:\n" &   -- 6   <- C_MENU_FLOPPY_A  (radio: destino del disco fisico)
-   " Internal to Drive B:\n" &   -- 7   <- C_MENU_FLOPPY_B
-   " Read internal floppy\n" &   -- 8   <- C_MENU_FLOPPY_TEST (accion)
-   " FORMAT WHOLE DISK !!\n" &    -- 9   <- C_MENU_FLOPPY_FMT (M4027: DESTRUYE EL DISQUETE ENTERO)
-   " Write: density alt\n"  &    -- 10  <- C_MENU_FLOPPY_DENS (invierte DENSEL, ver floppy_phys)
-   -- M4023: elige el separador de datos. Apagado = clasificador de ventanas fijas (el de
-   -- siempre), encendido = DPLL. Conmutable para poder comparar A/B con el mismo disquete en
-   -- la misma sesion.
+   -- M4032: todo lo de la disquetera fisica pasa a un SUBMENU.
    --
-   -- Aqui vivian las cuatro lineas de "Slow block" de M4018, que eran andamiaje de MEDIDA:
-   -- retrasaban el acuse que ve el u765 para averiguar cuanta latencia tolera la cadena.
-   -- Resultado: falla ya con 100 ms, lo que descarta leer pistas bajo demanda (M4D) y esta
-   -- anotado en DECISIONES.md. Medida hecha, andamiaje fuera.
-   " Separator: DPLL\n"     &    -- 11  <- C_MENU_DPLL
-   "\n"                     &    -- 12
-   -- OJO: estos indices estaban desfasados en 1 desde antes de M4018 (decian 14 donde el
-   -- indice real era 15). Los de mega65.vhd si eran correctos. Corregidos aqui de paso.
-   " HDMI: %s\n"            &    -- 13  submenu HDMI: inicio
-   " HDMI Settings\n"       &    -- 14
-   "\n"                     &    -- 15
-   " 720p 50 Hz 16:9\n"     &    -- 16  <- C_MENU_HDMI_16_9_50
-   " 576p 50 Hz 4:3\n"      &    -- 17  <- C_MENU_HDMI_4_3_50
-   " 576p 50 Hz 5:4\n"      &    -- 18  <- C_MENU_HDMI_5_4_50
-   "\n"                     &    -- 19
-   " Back to main menu\n"   &    -- 20  submenu HDMI: fin
-   "\n"                     &    -- 21
-   " HDMI: CRT emulation\n" &    -- 22  <- C_MENU_CRT_EMULATION
-   " HDMI: Zoom-in\n"       &    -- 23  <- C_MENU_HDMI_ZOOM
-   " Audio improvements\n"  &    -- 24  <- C_MENU_IMPROVE_AUDIO
+   -- Por que: "FORMAT WHOLE DISK !!" destruye un disquete entero y estaba en el menu
+   -- principal, al lado de cosas inocuas como el cambio de puertos de joystick. Ahora hay que
+   -- entrar a proposito, igual que en el submenu de HDMI, y aqui esta mucho mas justificado.
+   --
+   -- CONTIGUIDAD OBLIGATORIA: un bloque de submenu va seguido desde su cabecera hasta su
+   -- cierre, sin reordenar. No es una preferencia de estilo - AExp lo intento y se lo refuto
+   -- el hardware (fatal 0x001F al salir del submenu en R3): los bloques se definen por
+   -- contiguidad y el bit i del menu esta atado posicionalmente a la linea i.
+   --
+   -- El "%s" de la cabecera lo resuelve SUBMENU_SUMMARY en nuestro propio firmware
+   -- (CORE/m2m-rom/m2m-rom.asm), que hoy devuelve 0 = sin cadena propia; el framework
+   -- muestra entonces el item seleccionado del grupo del submenu, que es justo lo que
+   -- queremos: "Internal floppy: Drive A:".
+   " Internal floppy: %s\n" &    -- 5   submenu: inicio
+   " Internal floppy\n"     &    -- 6
+   "\n"                     &    -- 7
+   " Off\n"                 &    -- 8   <- C_MENU_FLOPPY_OFF (por defecto)
+   " Drive A:\n"            &    -- 9   <- C_MENU_FLOPPY_A
+   " Drive B:\n"            &    -- 10  <- C_MENU_FLOPPY_B
+   "\n"                     &    -- 11
+   " Read disk now\n"       &    -- 12  <- C_MENU_FLOPPY_TEST
+   "\n"                     &    -- 13
+   " FORMAT WHOLE DISK !!\n" &   -- 14  <- C_MENU_FLOPPY_FMT (DESTRUYE EL DISQUETE ENTERO)
+    " COPY IMAGE TO DISK !!\n" & -- 15  <- C_MENU_FLOPPY_COPY (DESTRUYE EL DISQUETE ENTERO)
+   " Write: density alt\n"  &    -- 16  <- C_MENU_FLOPPY_DENS (invierte DENSEL)
+   " Separator: DPLL\n"     &    -- 17  <- C_MENU_DPLL
+   "\n"                     &    -- 18
+   " Back to main menu\n"   &    -- 19  submenu: fin
+   "\n"                     &    -- 20
+   " Swap joystick ports\n" &    -- 21  <- C_MENU_FLIP_JOYS
+   "\n"                     &    -- 22
+   " HDMI: %s\n"            &    -- 23  submenu HDMI: inicio
+   " HDMI Settings\n"       &    -- 24
    "\n"                     &    -- 25
-   " Close Menu\n";              -- 26
+   " 720p 50 Hz 16:9\n"     &    -- 26  <- C_MENU_HDMI_16_9_50
+   " 576p 50 Hz 4:3\n"      &    -- 27  <- C_MENU_HDMI_4_3_50
+   " 576p 50 Hz 5:4\n"      &    -- 28  <- C_MENU_HDMI_5_4_50
+   "\n"                     &    -- 29
+   " Back to main menu\n"   &    -- 30  submenu HDMI: fin
+   "\n"                     &    -- 31
+   " HDMI: CRT emulation\n" &    -- 32  <- C_MENU_CRT_EMULATION
+   " HDMI: Zoom-in\n"       &    -- 33  <- C_MENU_HDMI_ZOOM
+   " Audio improvements\n"  &    -- 34  <- C_MENU_IMPROVE_AUDIO
+   "\n"                     &    -- 35
+   " Close Menu\n";              -- 35
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -423,18 +438,21 @@ constant OPTM_ITEMS        : string :=
 -- tipo (mismo criterio que C64MEGA65 con OPTM_G_MOUNT_8/OPTM_G_MOUNT_9). Los IDs tienen que
 -- ser crecientes en el orden en que aparecen en el menu, y las unidades van las primeras, asi
 -- que los grupos de video se han renumerado a partir del 3.
+-- M4032: los IDs de grupo tienen que ser CRECIENTES en el orden en que aparecen en el menu,
+-- y al meter la disquetera en un submenu "Swap joystick ports" queda por detras de ella.
 constant OPTM_G_MOUNT_A    : integer := 1;
 constant OPTM_G_MOUNT_B    : integer := 2;
-constant OPTM_G_FLIP_JOYS  : integer := 3;   -- CPC4MEGA65 M3
-constant OPTM_G_FLOPPY_TGT : integer := 4;   -- CPC4MEGA65 M4B: destino A:/B: (grupo de radio)
-constant OPTM_G_FLOPPY     : integer := 5;   -- CPC4MEGA65 M4A: la accion de leer
-constant OPTM_G_FLOPPY_FMT : integer := 6;   -- CPC4MEGA65 M4C1: la accion de FORMATEAR
-constant OPTM_G_FLOPPY_DEN : integer := 7;   -- CPC4MEGA65 M4C1: polaridad de DENSEL al escribir
-constant OPTM_G_DPLL       : integer := 8;   -- CPC4MEGA65 M4023: eleccion de separador
-constant OPTM_G_HDMI       : integer := 9;
-constant OPTM_G_CRT        : integer := 10;
-constant OPTM_G_Zoom       : integer := 11;
-constant OPTM_G_Audio      : integer := 12;
+constant OPTM_G_FLOPPY_TGT : integer := 3;   -- M4B/M4032: Off / Drive A: / Drive B: (radio)
+constant OPTM_G_FLOPPY     : integer := 4;   -- M4A: la accion de leer
+constant OPTM_G_FLOPPY_FMT : integer := 5;   -- M4C1: la accion de FORMATEAR
+constant OPTM_G_FLOPPY_CPY : integer := 6;   -- M4034: copiar la imagen montada al disquete
+constant OPTM_G_FLOPPY_DEN : integer := 7;   -- M4C1: polaridad de DENSEL al escribir
+constant OPTM_G_DPLL       : integer := 8;   -- M4023: eleccion de separador
+constant OPTM_G_FLIP_JOYS  : integer := 9;   -- M3
+constant OPTM_G_HDMI       : integer := 10;
+constant OPTM_G_CRT        : integer := 11;
+constant OPTM_G_Zoom       : integer := 12;
+constant OPTM_G_Audio      : integer := 13;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -449,30 +467,41 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_MOUNT_B + OPTM_G_MOUNT_DRV,        --  3 Drive B: (unidad 1)
                                              OPTM_G_LINE,                              --  4 Line
 
-                                             OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      --  5 Swap joystick ports (on/off)
-                                             OPTM_G_FLOPPY_TGT + OPTM_G_STDSEL,        --  6 Internal to A:, por defecto
-                                             OPTM_G_FLOPPY_TGT,                        --  7 Internal to B:
-                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      --  8 Read internal floppy (on/off)
-                                             OPTM_G_FLOPPY_FMT + OPTM_G_SINGLESEL,     --  9 FORMAT track 0 (on/off)
-                                             OPTM_G_FLOPPY_DEN + OPTM_G_SINGLESEL,     -- 10 Write: density alt (on/off)
-                                             OPTM_G_DPLL + OPTM_G_SINGLESEL,           -- 11 Separator: DPLL (on/off)
-                                             OPTM_G_LINE,                              -- 12 Line
+                                             OPTM_G_SUBMENU,                           --  5 Floppy submenu: START
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  6 Headline "Internal floppy"
+                                             OPTM_G_LINE,                              --  7 Line
+                                             OPTM_G_FLOPPY_TGT + OPTM_G_STDSEL,        --  8 Off, por defecto
+                                             OPTM_G_FLOPPY_TGT,                        --  9 Drive A:
+                                             OPTM_G_FLOPPY_TGT,                        -- 10 Drive B:
+                                             OPTM_G_LINE,                              -- 11 Line
+                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      -- 12 Read disk now
+                                             OPTM_G_LINE,                              -- 13 Line
+                                             OPTM_G_FLOPPY_FMT + OPTM_G_SINGLESEL,     -- 14 FORMAT WHOLE DISK !!
+                                             OPTM_G_FLOPPY_CPY + OPTM_G_SINGLESEL,     -- 15 COPY IMAGE TO DISK !!
+                                             OPTM_G_FLOPPY_DEN + OPTM_G_SINGLESEL,     -- 16 Write: density alt
+                                             OPTM_G_DPLL + OPTM_G_SINGLESEL,           -- 17 Separator: DPLL
+                                             OPTM_G_LINE,                              -- 18 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 19 Floppy submenu: END
 
-                                             OPTM_G_SUBMENU,                           -- 13 HDMI submenu: START ("HDMI: %s")
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 14 Headline "HDMI Settings"
-                                             OPTM_G_LINE,                              -- 15 Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 16 720p 50 Hz 16:9, por defecto
-                                             OPTM_G_HDMI,                              -- 17 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 18 576p 50 Hz 5:4
-                                             OPTM_G_LINE,                              -- 19 Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 20 HDMI submenu: END
+                                             OPTM_G_LINE,                              -- 20 Line
+                                             OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      -- 21 Swap joystick ports
+                                             OPTM_G_LINE,                              -- 22 Line
 
-                                             OPTM_G_LINE,                              -- 21 Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 22 CRT emulation (on/off)
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 23 Zoom-in (on/off)
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 24 Audio improvements (on/off)
+                                             OPTM_G_SUBMENU,                           -- 23 HDMI submenu: START ("HDMI: %s")
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 24 Headline "HDMI Settings"
                                              OPTM_G_LINE,                              -- 25 Line
-                                             OPTM_G_CLOSE                              -- 26 Close Menu
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 26 720p 50 Hz 16:9, por defecto
+                                             OPTM_G_HDMI,                              -- 27 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 28 576p 50 Hz 5:4
+                                             OPTM_G_LINE,                              -- 29 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 30 HDMI submenu: END
+
+                                             OPTM_G_LINE,                              -- 31 Line
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 32 CRT emulation (on/off)
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 33 Zoom-in (on/off)
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 34 Audio improvements (on/off)
+                                             OPTM_G_LINE,                              -- 35 Line
+                                             OPTM_G_CLOSE                              -- 36 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

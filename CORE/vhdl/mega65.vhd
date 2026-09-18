@@ -269,21 +269,24 @@ signal main_rst               : std_logic;
 -- separador) al principio de OPTM_ITEMS. Justo el reajuste manual del que avisa la wiki.
 -- CPC4MEGA65 (M3): +2 mas, por "Swap joystick ports" y su separador.
 -- CPC4MEGA65 (M4A): +1 mas, por "Floppy: motor test".
-constant C_MENU_FLIP_JOYS      : natural := 5;
-constant C_MENU_FLOPPY_A       : natural := 6;
-constant C_MENU_FLOPPY_B       : natural := 7;
-constant C_MENU_FLOPPY_TEST    : natural := 8;
-constant C_MENU_FLOPPY_FMT     : natural := 9;
-constant C_MENU_FLOPPY_DENS    : natural := 10;
--- CPC4MEGA65 (M4023): +1 por "Separator: DPLL". Las cuatro lineas de "Slow block" de M4018
--- eran andamiaje de medida y se han quitado, asi que el neto respecto a M4017 es -3.
-constant C_MENU_DPLL           : natural := 11;
-constant C_MENU_HDMI_16_9_50   : natural := 16;
-constant C_MENU_HDMI_4_3_50    : natural := 17;
-constant C_MENU_HDMI_5_4_50    : natural := 18;
-constant C_MENU_CRT_EMULATION  : natural := 22;
-constant C_MENU_HDMI_ZOOM      : natural := 23;
-constant C_MENU_IMPROVE_AUDIO  : natural := 24;
+-- CPC4MEGA65 (M4032): la disquetera fisica se muda a un submenu, asi que todo lo suyo baja y
+-- "Swap joystick ports" queda por detras. Comprobado con el script de indices del scratchpad,
+-- que cruza cada constante con el TEXTO de la linea que direcciona.
+constant C_MENU_FLOPPY_OFF     : natural := 8;    -- radio: la disquetera no se usa
+constant C_MENU_FLOPPY_A       : natural := 9;
+constant C_MENU_FLOPPY_B       : natural := 10;
+constant C_MENU_FLOPPY_TEST    : natural := 12;
+constant C_MENU_FLOPPY_FMT     : natural := 14;
+constant C_MENU_FLOPPY_COPY    : natural := 15;   -- M4034: copiar la imagen al disquete
+constant C_MENU_FLOPPY_DENS    : natural := 16;
+constant C_MENU_FLIP_JOYS      : natural := 21;
+constant C_MENU_DPLL           : natural := 17;
+constant C_MENU_HDMI_16_9_50   : natural := 26;
+constant C_MENU_HDMI_4_3_50    : natural := 27;
+constant C_MENU_HDMI_5_4_50    : natural := 28;
+constant C_MENU_CRT_EMULATION  : natural := 32;
+constant C_MENU_HDMI_ZOOM      : natural := 33;
+constant C_MENU_IMPROVE_AUDIO  : natural := 34;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -349,6 +352,14 @@ signal main_floppy_wr_code    : std_logic_vector(4 downto 0);
 signal main_floppy_buf_addr   : std_logic_vector(17 downto 0);
 signal main_floppy_buf_data   : std_logic_vector(7 downto 0);
 signal main_floppy_buf_we     : std_logic;
+-- M4034: lectura del buffer de montaje por el lado del core. El puerto ya existia y estaba
+-- sin usar (q_b => open en las dos instancias).
+signal main_floppy_buf_qa     : std_logic_vector(7 downto 0);
+signal main_floppy_buf_qb     : std_logic_vector(7 downto 0);
+signal main_floppy_copy_en    : std_logic;
+signal main_floppy_copy_busy  : std_logic;
+signal main_floppy_copy_done  : std_logic;
+signal main_floppy_copy_refus : std_logic;
 signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
 signal main_dpll_en           : std_logic;   -- M4023: separador DPLL
 signal floppy_we_a            : std_logic;
@@ -365,6 +376,14 @@ signal main_floppy_fmt_full   : std_logic;
 signal main_floppy_density    : std_logic;
 signal main_floppy_id_cpc     : std_logic;
 signal blink_count            : std_logic_vector(4 downto 0);
+
+-- M4033: destello unico al terminar
+constant C_ONESHOT            : natural := 32_000_000;   -- 0,5 s a 64 MHz
+signal oneshot_cnt            : natural range 0 to C_ONESHOT := 0;
+signal done_d                 : std_logic := '0';
+signal fin_edge               : std_logic := '0';
+signal led_finished           : std_logic;
+signal floppy_led_own         : std_logic;
 
 -- Secuenciador que "dice" el recuento parpadeando (ver el comentario del LED)
 signal blink_div              : natural range 0 to 9_599_999 := 0;   -- 0,15 s a 64 MHz
@@ -533,6 +552,12 @@ begin
          floppy_buf_addr_o       => main_floppy_buf_addr,
          floppy_buf_data_o       => main_floppy_buf_data,
          floppy_buf_we_o         => main_floppy_buf_we,
+          floppy_buf_qa_i         => main_floppy_buf_qa,      -- M4034
+          floppy_buf_qb_i         => main_floppy_buf_qb,
+          floppy_copy_en_i        => main_floppy_copy_en,
+          floppy_copy_busy_o      => main_floppy_copy_busy,
+          floppy_copy_done_o      => main_floppy_copy_done,
+          floppy_copy_refused_o   => main_floppy_copy_refus,
          floppy_tgt_b_i          => main_floppy_tgt_b,
          dpll_en_i               => main_dpll_en,
          floppy_fmt_enable_i     => main_floppy_fmt_en,
@@ -769,7 +794,7 @@ begin
          address_b         => main_floppy_buf_addr,
          data_b            => main_floppy_buf_data,
          wren_b            => floppy_we_a,
-         q_b               => open
+         q_b               => main_floppy_buf_qa
       ); -- i_mount_buf_a
 
    i_mount_buf_b : entity work.dualport_2clk_ram
@@ -789,7 +814,7 @@ begin
          address_b         => main_floppy_buf_addr,
          data_b            => main_floppy_buf_data,
          wren_b            => floppy_we_b,
-         q_b               => open
+         q_b               => main_floppy_buf_qb
       ); -- i_mount_buf_b
 
    ---------------------------------------------------------------------------------------
@@ -844,9 +869,19 @@ begin
    ---------------------------------------------------------------------------------------
 
    -- El formateo necesita la mecanica en marcha, asi que enciende tambien floppy_enable.
-   main_floppy_fmt_en <= main_osm_control_i(C_MENU_FLOPPY_FMT);
+   -- M4032: con "Off" seleccionado la disquetera fisica no se usa para nada, ni siquiera si
+   -- se activa una accion. Es el estado por defecto: quien no la quiera, ni la enciende.
+   -- M4034: la copia usa el MISMO camino que el formateo - floppy_scan en modo formateo y
+   -- floppy_write escribiendo - y lo unico que cambia es de donde salen los bytes. Asi que la
+   -- copia tiene que encender tambien fmt_en; lo que la distingue es main_floppy_copy_en, que
+   -- pone a floppy_write en modo origen externo y da el permiso de sujecion a floppy_copy.
+   main_floppy_copy_en <= main_osm_control_i(C_MENU_FLOPPY_COPY) and
+                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
+   main_floppy_fmt_en <= (main_osm_control_i(C_MENU_FLOPPY_FMT) or main_floppy_copy_en) and
+                         not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_density <= not main_osm_control_i(C_MENU_FLOPPY_DENS);
-   main_floppy_enable <= main_osm_control_i(C_MENU_FLOPPY_TEST) or main_floppy_fmt_en;
+   main_floppy_enable <= (main_osm_control_i(C_MENU_FLOPPY_TEST) and
+                          not main_osm_control_i(C_MENU_FLOPPY_OFF)) or main_floppy_fmt_en;
 
    ---------------------------------------------------------------------------------------
    -- CPC4MEGA65 M4B: el LED "dice" el numero de sectores parpadeando
@@ -930,7 +965,33 @@ begin
    -- ha enganchado ni un sector (ahi el separador o la densidad estan mal).
    -- Recorrido terminado y sin pistas malas: LED fijo, que es la señal mas facil de reconocer
    -- para el caso bueno. Con pistas malas, las cuenta parpadeando.
-   floppy_led_on  <= blink_on                     when (main_floppy_scan_done = '1') else
+   -- M4033: al TERMINAR, el LED da UN destello de medio segundo y se apaga. Antes repetia el
+   -- recuento en bucle indefinidamente, que era util cuando el LED era el unico instrumento
+   -- que teniamos; desde que hay volcado de telemetria no aporta nada y solo molesta.
+   -- Verde = todo bien, ambar = hubo sectores defectuosos. Durante la operacion se mantiene
+   -- el parpadeo por pista, que si informa de que avanza.
+   led_oneshot_proc : process (main_clk)
+   begin
+      if rising_edge(main_clk) then
+         done_d     <= main_floppy_scan_done or main_floppy_fmt_done;
+         fin_edge   <= (main_floppy_scan_done or main_floppy_fmt_done) and not done_d;
+
+         if fin_edge = '1' then
+            oneshot_cnt <= C_ONESHOT;
+         elsif oneshot_cnt /= 0 then
+            oneshot_cnt <= oneshot_cnt - 1;
+         end if;
+      end if;
+   end process led_oneshot_proc;
+
+   -- M4034: un rechazo de la copia tambien es un FINAL, y ademas es el que mas falta hace
+   -- avisar: llega en microsegundos, antes de que la mecanica se mueva, y sin esto el usuario
+   -- marcaria la opcion y no pasaria absolutamente nada.
+   led_finished <= '1' when (main_floppy_scan_done = '1' or main_floppy_fmt_done = '1' or
+                             main_floppy_copy_refus = '1') else '0';
+
+   floppy_led_on  <= '1' when (led_finished = '1' and oneshot_cnt /= 0) else
+                     '0' when led_finished = '1' else
                      blink_on                     when main_floppy_mfm_done = '1' and blink_count /= "00000" else
                      '1'                          when main_floppy_mfm_done = '1' else
                      main_floppy_blink            when (main_floppy_ready = '1' and main_floppy_disk_in = '1') else
@@ -951,7 +1012,16 @@ begin
    -- La distincion magenta/naranja es la que hace util la prueba: sobre un disco de PC, que
    -- salgan 9 sectores NO distingue "he formateado bien" de "no he escrito nada", porque su
    -- pista 0 ya tenia 9. El numero de sector si lo distingue.
-   floppy_led_col <= x"FF0000" when main_floppy_fmt_refus = '1' else
+   -- M4033: al terminar, solo dos colores y sin ambiguedad.
+   --   VERDE = todo correcto
+   --   AMBAR = hubo sectores o pistas defectuosas
+   -- Lo demas (densidad, numeracion CPC, estados del formateo) ya lo dice el volcado con
+   -- mucho mas detalle; el LED solo tiene que responder "ha ido bien o no".
+   floppy_led_col <= x"00FF00" when (led_finished = '1' and main_floppy_bad_trk = "00000"
+                                     and main_floppy_fmt_refus = '0'
+                                      and main_floppy_copy_refus = '0') else   -- M4034
+                     x"FF8000" when led_finished = '1' else
+                     x"FF0000" when main_floppy_fmt_refus = '1' else
                      x"FFFFFF" when main_floppy_fmt_busy  = '1' else
                      x"0000FF" when (main_floppy_fmt_done = '1' and main_floppy_id_cpc = '1') else
                      x"FF8000" when (main_floppy_fmt_done = '1' and main_floppy_fmt_full = '1') else
@@ -970,9 +1040,16 @@ begin
                      x"FFFF00" when main_floppy_busy  = '1' else
                      x"00FF00";
 
-   main_drive_led_o     <= floppy_led_on when main_floppy_enable = '1' else
+   -- M4033: el subsistema de la disquetera fisica se queda el LED mientras opera y durante el
+   -- destello final; cuando ese destello se apaga lo DEVUELVE al LED normal de unidad. Antes se
+   -- lo quedaba para siempre mientras la opcion estuviera marcada en el menu, asi que tras una
+   -- lectura ya no se veia la actividad del u765.
+   floppy_led_own <= '1' when (main_floppy_enable = '1' and
+                               not (led_finished = '1' and oneshot_cnt = 0)) else '0';
+
+   main_drive_led_o     <= floppy_led_on when floppy_led_own = '1' else
                            (main_drive_active or main_cache_busy);
-   main_drive_led_col_o <= floppy_led_col when main_floppy_enable = '1' else
+   main_drive_led_col_o <= floppy_led_col when floppy_led_own = '1' else
                            x"0000FF"      when main_cache_busy = '1' else
                            x"FF0000";
 
