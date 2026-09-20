@@ -122,6 +122,18 @@ entity main is
       -- seguidas con la puerta abierta 50 ciclos. Un indicador que no puede decir que no,
       -- no informa.
       floppy_wrote_ok_o       : out std_logic;
+      -- M4044: el volcado de telemetria pasa a ser una ACCION EXPLICITA del menu.
+      --
+      -- Se disparaba solo al terminar cada lectura, y eso DESTRUIA IMAGENES del usuario: la
+      -- lectura fisica llena el buffer de montaje, que es el MISMO donde vive el .dsk montado,
+      -- y el volcado pedia una escritura a proposito para forzar al Shell a volcar ese buffer
+      -- ENTERO sobre el fichero de la tarjeta. Resultado: el .dsk original sobrescrito con el
+      -- contenido del disquete fisico, sin aviso y sin vuelta atras. Ya se cargo dos imagenes
+      -- del usuario, se anoto como 'hay que hacerlo explicito' y se dejo aparcado.
+      --
+      -- Ahora el camino normal -montar un .dsk y leer un disquete fisico- no escribe en la
+      -- tarjeta absolutamente nada.
+      floppy_dump_en_i        : in  std_logic := '0';
       -- M4014: a que unidad va la disquetera fisica ('0' = A:, '1' = B:). Hace falta aqui
       -- para saber en cual de las dos hay que volver a disparar el montaje al terminar.
       floppy_tgt_b_i          : in  std_logic;
@@ -1310,7 +1322,7 @@ begin
    dump_proc : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
-         dump_scan_d <= scan_done_dly;
+         dump_scan_d <= floppy_dump_en_i;   -- M4044: ahora vigila el item de menu
 
          -- M4031: recordar si la unidad ha llegado a montarse de verdad alguna vez
          for i in 0 to 1 loop
@@ -1319,13 +1331,13 @@ begin
             end if;
          end loop;
 
-         if floppy_dsk_start = '1' then
-            dump_done  <= '0';                   -- recorrido nuevo, volcado nuevo
-            dump_req   <= '0';
-            dump_tmo   <= 0;
-            read_armed <= '1';                   -- M4031: venimos de una LECTURA
-         elsif scan_done_dly = '1' and dump_scan_d = '0' and dump_done = '0'
-               and read_armed = '1'
+         -- M4044: un pulso por marcado. Para repetirlo hay que desmarcar y volver a marcar,
+         -- que es exactamente lo que se quiere de una accion que sobrescribe el fichero
+         -- montado.
+         if floppy_dump_en_i = '0' then
+            dump_done <= '0';
+         end if;
+         if floppy_dump_en_i = '1' and dump_scan_d = '0' and dump_done = '0'
                and ((floppy_tgt_b_i = '0' and img_ever_mnt(0) = '1') or
                     (floppy_tgt_b_i = '1' and img_ever_mnt(1) = '1')) then
             dump_req  <= '1';

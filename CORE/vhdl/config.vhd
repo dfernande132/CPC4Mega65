@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4D - Build M4042\n\n" &
+   "Status: Milestone 4D - Build M4044\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -360,7 +360,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 37;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 40;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -368,7 +368,10 @@ constant OPTM_SIZE         : natural := 37;  -- amount of items including empty 
 -- Net size of the Options menu on the screen in characters (excluding the frame, which is hardcoded to two characters)
 -- Without submenus: Use OPTM_SIZE as height, otherwise count how large the actually visible main menu is.
 constant OPTM_DX           : natural := 23;
-constant OPTM_DY           : natural := 16;  -- M4041: las 37 lineas de OPTM_ITEMS menos las 14
+constant OPTM_DY           : natural := 17;  -- M4044: 40 lineas menos las 15 del submenu de
+                                             -- disquetera, las 7 del de HDMI y las 2 gemelas que
+                                             -- NUNCA se ven a la vez. OPTM_DY cuenta lineas
+                                             -- SIMULTANEAMENTE visibles, no estructurales.
                                              -- del submenu de disquetera y las 7 del de HDMI.
 
 -- CPC4MEGA65 (M1B003): menu propio. El de la plantilla traia tres items "Drive X/Y/Z" con el
@@ -402,8 +405,10 @@ constant OPTM_ITEMS        : string :=
    " Amstrad CPC 6128\n"    &    -- 0
    "\n"                     &    -- 1
    " Drive A:%s\n"          &    -- 2   <- unidad 0 del u765 (primera linea OPTM_G_MOUNT_DRV)
-   " Drive B:%s\n"          &    -- 3   <- unidad 1 del u765
-   "\n"                     &    -- 4
+    " Drive A:INTERNAL\n"    &    -- 3   gemela de TEXTO de la linea 2
+   " Drive B:%s\n"          &    -- 4   <- unidad 1 del u765
+    " Drive B:INTERNAL\n"    &    -- 5   gemela de TEXTO de la linea 4
+   "\n"                     &    -- 6
    -- M4032: todo lo de la disquetera fisica pasa a un SUBMENU.
    --
    -- Por que: "FORMAT WHOLE DISK !!" destruye un disquete entero y estaba en el menu
@@ -419,37 +424,38 @@ constant OPTM_ITEMS        : string :=
    -- (CORE/m2m-rom/m2m-rom.asm), que hoy devuelve 0 = sin cadena propia; el framework
    -- muestra entonces el item seleccionado del grupo del submenu, que es justo lo que
    -- queremos: "Internal floppy: Drive A:".
-   " Internal floppy: %s\n" &    -- 5   submenu: inicio
-   " Internal floppy\n"     &    -- 6
-   "\n"                     &    -- 7
-   " Off\n"                 &    -- 8   <- C_MENU_FLOPPY_OFF (por defecto)
-   " Drive A:\n"            &    -- 9   <- C_MENU_FLOPPY_A
-   " Drive B:\n"            &    -- 10  <- C_MENU_FLOPPY_B
-   "\n"                     &    -- 11
-   " Read disk now\n"       &    -- 12  <- C_MENU_FLOPPY_TEST
+   " Internal floppy: %s\n" &    -- 7   submenu: inicio
+   " Internal floppy\n"     &    -- 8
+   "\n"                     &    -- 9
+   " Off\n"                 &    -- 10   <- C_MENU_FLOPPY_OFF (por defecto)
+   " Drive A:\n"            &    -- 11   <- C_MENU_FLOPPY_A
+   " Drive B:\n"            &    -- 12  <- C_MENU_FLOPPY_B
    "\n"                     &    -- 13
-   " FORMAT WHOLE DISK !!\n" &   -- 14  <- C_MENU_FLOPPY_FMT (DESTRUYE EL DISQUETE ENTERO)
-    " COPY IMAGE TO DISK !!\n" & -- 15  <- C_MENU_FLOPPY_COPY (DESTRUYE EL DISQUETE ENTERO)
-    " WRITE BACK TO DISK !!\n" & -- 16 <- C_MENU_FLOPPY_WB
-    " Auto write-back\n"     &   -- 17 <- C_MENU_FLOPPY_WBAUTO
-   "\n"                     &    -- 18
-   " Back to main menu\n"   &    -- 19  submenu: fin
-   "\n"                     &    -- 20
-   " Swap joystick ports\n" &    -- 21  <- C_MENU_FLIP_JOYS
-   "\n"                     &    -- 22
-   " HDMI: %s\n"            &    -- 23  submenu HDMI: inicio
-   " HDMI Settings\n"       &    -- 24
+   " Read disk now\n"       &    -- 14  <- C_MENU_FLOPPY_TEST
+   "\n"                     &    -- 15
+   " FORMAT WHOLE DISK !!\n" &   -- 16  <- C_MENU_FLOPPY_FMT (DESTRUYE EL DISQUETE ENTERO)
+    " COPY IMAGE TO DISK !!\n" & -- 17  <- C_MENU_FLOPPY_COPY (DESTRUYE EL DISQUETE ENTERO)
+    " WRITE BACK TO DISK !!\n" & -- 18 <- C_MENU_FLOPPY_WB
+    " Auto write-back\n"     &   -- 19 <- C_MENU_FLOPPY_WBAUTO
+    " Dump telemetry\n"      &    -- 20  <- C_MENU_FLOPPY_DUMP (diagnostico)
+   "\n"                     &    -- 21
+   " Back to main menu\n"   &    -- 22  submenu: fin
+   "\n"                     &    -- 23
+   " Swap joystick ports\n" &    -- 24  <- C_MENU_FLIP_JOYS
    "\n"                     &    -- 25
-   " 720p 50 Hz 16:9\n"     &    -- 26  <- C_MENU_HDMI_16_9_50
-   " 576p 50 Hz 4:3\n"      &    -- 27  <- C_MENU_HDMI_4_3_50
-   " 576p 50 Hz 5:4\n"      &    -- 28  <- C_MENU_HDMI_5_4_50
-   "\n"                     &    -- 29
-   " Back to main menu\n"   &    -- 30  submenu HDMI: fin
-   "\n"                     &    -- 31
-   " HDMI: CRT emulation\n" &    -- 32  <- C_MENU_CRT_EMULATION
-   " HDMI: Zoom-in\n"       &    -- 33  <- C_MENU_HDMI_ZOOM
-   " Audio improvements\n"  &    -- 34  <- C_MENU_IMPROVE_AUDIO
-   "\n"                     &    -- 35
+   " HDMI: %s\n"            &    -- 26  submenu HDMI: inicio
+   " HDMI Settings\n"       &    -- 27
+   "\n"                     &    -- 28
+   " 720p 50 Hz 16:9\n"     &    -- 29  <- C_MENU_HDMI_16_9_50
+   " 576p 50 Hz 4:3\n"      &    -- 30  <- C_MENU_HDMI_4_3_50
+   " 576p 50 Hz 5:4\n"      &    -- 31  <- C_MENU_HDMI_5_4_50
+   "\n"                     &    -- 32
+   " Back to main menu\n"   &    -- 33  submenu HDMI: fin
+   "\n"                     &    -- 34
+   " HDMI: CRT emulation\n" &    -- 35  <- C_MENU_CRT_EMULATION
+   " HDMI: Zoom-in\n"       &    -- 36  <- C_MENU_HDMI_ZOOM
+   " Audio improvements\n"  &    -- 37  <- C_MENU_IMPROVE_AUDIO
+   "\n"                     &    -- 38
    " Close Menu\n";              -- 35
 
 -- define your own constants here and choose meaningful names
@@ -471,11 +477,12 @@ constant OPTM_G_FLOPPY_FMT : integer := 5;   -- M4C1: la accion de FORMATEAR
 constant OPTM_G_FLOPPY_CPY : integer := 6;   -- M4034: copiar la imagen montada al disquete
 constant OPTM_G_FLOPPY_WB  : integer := 7;   -- M4035: reescribir las pistas sucias, a mano
 constant OPTM_G_FLOPPY_WBA : integer := 8;   -- M4035: ...y solo, tras 1 s sin actividad
-constant OPTM_G_FLIP_JOYS  : integer := 9;   -- M3
-constant OPTM_G_HDMI       : integer := 10;
-constant OPTM_G_CRT        : integer := 11;
-constant OPTM_G_Zoom       : integer := 12;
-constant OPTM_G_Audio      : integer := 13;
+constant OPTM_G_FLOPPY_DMP : integer := 9;   -- M4044: volcar la telemetria, diagnostico
+constant OPTM_G_FLIP_JOYS  : integer := 10;   -- M3
+constant OPTM_G_HDMI       : integer := 11;
+constant OPTM_G_CRT        : integer := 12;
+constant OPTM_G_Zoom       : integer := 13;
+constant OPTM_G_Audio      : integer := 14;
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -486,45 +493,48 @@ type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC-
 constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,            --  0 Headline "Amstrad CPC 6128"
                                              OPTM_G_LINE,                              --  1 Line
 
-                                             OPTM_G_MOUNT_A + OPTM_G_MOUNT_DRV + OPTM_G_START,  --  2 Drive A: (unidad 0), cursor aqui
-                                             OPTM_G_MOUNT_B + OPTM_G_MOUNT_DRV,        --  3 Drive B: (unidad 1)
-                                             OPTM_G_LINE,                              --  4 Line
+                                             OPTM_G_MOUNT_A + OPTM_G_MOUNT_DRV + OPTM_G_START + OPTM_DEP2(OPTM_G_FLOPPY_TGT, 0, 2),  --  2 Drive A: imagen
+                                             OPTM_G_TEXT + OPTM_DEP(OPTM_G_FLOPPY_TGT, 1),  --  3 Drive A: es la disquetera
+                                             OPTM_G_MOUNT_B + OPTM_G_MOUNT_DRV + OPTM_DEP2(OPTM_G_FLOPPY_TGT, 0, 1),  --  4 Drive B: imagen
+                                             OPTM_G_TEXT + OPTM_DEP(OPTM_G_FLOPPY_TGT, 2),  --  5 Drive B: es la disquetera
+                                             OPTM_G_LINE,                              --  6 Line
 
-                                             OPTM_G_SUBMENU,                           --  5 Floppy submenu: START
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  6 Headline "Internal floppy"
-                                             OPTM_G_LINE,                              --  7 Line
-                                             OPTM_G_FLOPPY_TGT + OPTM_G_STDSEL,        --  8 Off, por defecto
-                                             OPTM_G_FLOPPY_TGT,                        --  9 Drive A:
-                                             OPTM_G_FLOPPY_TGT,                        -- 10 Drive B:
-                                             OPTM_G_LINE,                              -- 11 Line
-                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      -- 12 Read disk now
+                                             OPTM_G_SUBMENU,                           --  7 Floppy submenu: START
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            --  8 Headline "Internal floppy"
+                                             OPTM_G_LINE,                              --  9 Line
+                                             OPTM_G_FLOPPY_TGT + OPTM_G_STDSEL,        -- 10 Off, por defecto
+                                             OPTM_G_FLOPPY_TGT,                        -- 11 Drive A:
+                                             OPTM_G_FLOPPY_TGT,                        -- 12 Drive B:
                                              OPTM_G_LINE,                              -- 13 Line
-                                             OPTM_G_FLOPPY_FMT + OPTM_G_SINGLESEL,     -- 14 FORMAT WHOLE DISK !!
-                                             OPTM_G_FLOPPY_CPY + OPTM_G_SINGLESEL,     -- 15 COPY IMAGE TO DISK !!
-                                             OPTM_G_FLOPPY_WB  + OPTM_G_SINGLESEL,     -- 16 WRITE BACK TO DISK !!
-                                             OPTM_G_FLOPPY_WBA + OPTM_G_SINGLESEL + OPTM_G_STDSEL,     -- 17 Auto write-back
-                                             OPTM_G_LINE,                              -- 18 Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 19 Floppy submenu: END
+                                             OPTM_G_FLOPPY    + OPTM_G_SINGLESEL,      -- 14 Read disk now
+                                             OPTM_G_LINE,                              -- 15 Line
+                                             OPTM_G_FLOPPY_FMT + OPTM_G_SINGLESEL,     -- 16 FORMAT WHOLE DISK !!
+                                             OPTM_G_FLOPPY_CPY + OPTM_G_SINGLESEL,     -- 17 COPY IMAGE TO DISK !!
+                                             OPTM_G_FLOPPY_WB  + OPTM_G_SINGLESEL,     -- 18 WRITE BACK TO DISK !!
+                                             OPTM_G_FLOPPY_WBA + OPTM_G_SINGLESEL + OPTM_G_STDSEL,     -- 19 Auto write-back
+                                             OPTM_G_FLOPPY_DMP + OPTM_G_SINGLESEL,     -- 20 Dump telemetry
+                                             OPTM_G_LINE,                              -- 21 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 22 Floppy submenu: END
 
-                                             OPTM_G_LINE,                              -- 20 Line
-                                             OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      -- 21 Swap joystick ports
-                                             OPTM_G_LINE,                              -- 22 Line
-
-                                             OPTM_G_SUBMENU,                           -- 23 HDMI submenu: START ("HDMI: %s")
-                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 24 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              -- 23 Line
+                                             OPTM_G_FLIP_JOYS + OPTM_G_SINGLESEL,      -- 24 Swap joystick ports
                                              OPTM_G_LINE,                              -- 25 Line
-                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 26 720p 50 Hz 16:9, por defecto
-                                             OPTM_G_HDMI,                              -- 27 576p 50 Hz 4:3
-                                             OPTM_G_HDMI,                              -- 28 576p 50 Hz 5:4
-                                             OPTM_G_LINE,                              -- 29 Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 30 HDMI submenu: END
 
-                                             OPTM_G_LINE,                              -- 31 Line
-                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 32 CRT emulation (on/off)
-                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 33 Zoom-in (on/off)
-                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 34 Audio improvements (on/off)
-                                             OPTM_G_LINE,                              -- 35 Line
-                                             OPTM_G_CLOSE                              -- 36 Close Menu
+                                             OPTM_G_SUBMENU,                           -- 26 HDMI submenu: START ("HDMI: %s")
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 27 Headline "HDMI Settings"
+                                             OPTM_G_LINE,                              -- 28 Line
+                                             OPTM_G_HDMI + OPTM_G_STDSEL,              -- 29 720p 50 Hz 16:9, por defecto
+                                             OPTM_G_HDMI,                              -- 30 576p 50 Hz 4:3
+                                             OPTM_G_HDMI,                              -- 31 576p 50 Hz 5:4
+                                             OPTM_G_LINE,                              -- 32 Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 33 HDMI submenu: END
+
+                                             OPTM_G_LINE,                              -- 34 Line
+                                             OPTM_G_CRT     + OPTM_G_SINGLESEL,        -- 35 CRT emulation (on/off)
+                                             OPTM_G_Zoom    + OPTM_G_SINGLESEL,        -- 36 Zoom-in (on/off)
+                                             OPTM_G_Audio   + OPTM_G_SINGLESEL,        -- 37 Audio improvements (on/off)
+                                             OPTM_G_LINE,                              -- 38 Line
+                                             OPTM_G_CLOSE                              -- 39 Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

@@ -272,21 +272,22 @@ signal main_rst               : std_logic;
 -- CPC4MEGA65 (M4032): la disquetera fisica se muda a un submenu, asi que todo lo suyo baja y
 -- "Swap joystick ports" queda por detras. Comprobado con el script de indices del scratchpad,
 -- que cruza cada constante con el TEXTO de la linea que direcciona.
-constant C_MENU_FLOPPY_OFF     : natural := 8;    -- radio: la disquetera no se usa
-constant C_MENU_FLOPPY_A       : natural := 9;
-constant C_MENU_FLOPPY_B       : natural := 10;
-constant C_MENU_FLOPPY_TEST    : natural := 12;
-constant C_MENU_FLOPPY_FMT     : natural := 14;
-constant C_MENU_FLOPPY_COPY    : natural := 15;   -- M4034: copiar la imagen al disquete
-constant C_MENU_FLOPPY_WB      : natural := 16;   -- M4035: reescribir pistas sucias, a mano
-constant C_MENU_FLOPPY_WBAUTO  : natural := 17;   -- M4035: ...y solo
-constant C_MENU_FLIP_JOYS      : natural := 21;
-constant C_MENU_HDMI_16_9_50   : natural := 26;
-constant C_MENU_HDMI_4_3_50    : natural := 27;
-constant C_MENU_HDMI_5_4_50    : natural := 28;
-constant C_MENU_CRT_EMULATION  : natural := 32;
-constant C_MENU_HDMI_ZOOM      : natural := 33;
-constant C_MENU_IMPROVE_AUDIO  : natural := 34;
+constant C_MENU_FLOPPY_OFF     : natural := 10;    -- radio: la disquetera no se usa
+constant C_MENU_FLOPPY_A       : natural := 11;
+constant C_MENU_FLOPPY_B       : natural := 12;
+constant C_MENU_FLOPPY_TEST    : natural := 14;
+constant C_MENU_FLOPPY_FMT     : natural := 16;
+constant C_MENU_FLOPPY_COPY    : natural := 17;   -- M4034: copiar la imagen al disquete
+constant C_MENU_FLOPPY_WB      : natural := 18;   -- M4035: reescribir pistas sucias, a mano
+constant C_MENU_FLOPPY_WBAUTO  : natural := 19;   -- M4035: ...y solo
+constant C_MENU_FLOPPY_DUMP    : natural := 20;   -- M4044: volcar telemetria
+constant C_MENU_FLIP_JOYS      : natural := 24;
+constant C_MENU_HDMI_16_9_50   : natural := 29;
+constant C_MENU_HDMI_4_3_50    : natural := 30;
+constant C_MENU_HDMI_5_4_50    : natural := 31;
+constant C_MENU_CRT_EMULATION  : natural := 35;
+constant C_MENU_HDMI_ZOOM      : natural := 36;
+constant C_MENU_IMPROVE_AUDIO  : natural := 37;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -365,6 +366,7 @@ signal main_floppy_wb_auto    : std_logic;
 signal main_floppy_wb_active  : std_logic;
 signal main_floppy_wb_pending : std_logic;
 signal main_floppy_wrote_ok   : std_logic;   -- M4039
+signal main_floppy_dump_en    : std_logic;   -- M4044
 signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
 signal main_dpll_en           : std_logic;   -- M4023: separador DPLL
 signal floppy_we_a            : std_logic;
@@ -568,6 +570,7 @@ begin
           floppy_wb_active_o      => main_floppy_wb_active,
           floppy_wb_pending_o     => main_floppy_wb_pending,
           floppy_wrote_ok_o       => main_floppy_wrote_ok,   -- M4039
+          floppy_dump_en_i        => main_floppy_dump_en,      -- M4044
          floppy_tgt_b_i          => main_floppy_tgt_b,
          dpll_en_i               => main_dpll_en,
          floppy_fmt_enable_i     => main_floppy_fmt_en,
@@ -894,6 +897,8 @@ begin
                           not main_osm_control_i(C_MENU_FLOPPY_OFF);
    -- El automatico NO se anula con la disquetera en Off: lo que se anula es la disquetera
    -- entera, asi que el interruptor puede quedarse encendido entre sesiones sin efecto.
+   main_floppy_dump_en <= main_osm_control_i(C_MENU_FLOPPY_DUMP) and
+                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_wb_auto <= main_osm_control_i(C_MENU_FLOPPY_WBAUTO) and
                           not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_copy_en <= main_osm_control_i(C_MENU_FLOPPY_COPY) and
