@@ -87,7 +87,7 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4D - Build M4041\n\n" &
+   "Status: Milestone 4D - Build M4042\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -297,6 +297,7 @@ constant SEL_OPTM_SAVING_STR  : std_logic_vector(15 downto 0) := x"030A";
 constant SEL_OPTM_HELP        : std_logic_vector(15 downto 0) := x"0310";
 constant SEL_OPTM_CRTROM      : std_logic_vector(15 downto 0) := x"0311";
 constant SEL_OPTM_CRTROM_STR  : std_logic_vector(15 downto 0) := x"0312";
+   constant SEL_OPTM_DEPS        : std_logic_vector(15 downto 0) := x"0313";   -- M2M-UPSTREAM osm-deps
 
 -- !!! DO NOT TOUCH !!! Configuration constants for OPTM_GROUPS (shell.asm and menu.asm expect them to be like this)
 constant OPTM_G_TEXT       : integer := 16#00000#;         -- text that cannot be selected
@@ -314,7 +315,29 @@ constant OPTM_G_HELP       : integer := 16#0A000#;        -- line item means: he
 constant OPTM_G_SUBMENU    : integer := 16#0C000#;        -- starts/ends a section that is treated as submenu
 constant OPTM_G_LOAD_ROM   : integer := 16#18000#;        -- line item means: load ROM; first occurance = rom 0, second = rom 1, ...
 
-constant OPTM_GTC          : natural := 17;                -- Amount of significant bits in OPTM_G_* constants
+-- M2M-UPSTREAM osm-deps: linea DEPENDIENTE. Solo se dibuja mientras este seleccionado uno de
+-- los items de un grupo 'madre', indicados por una mascara de 4 bits. Bit 29.
+constant OPTM_G_DEPENDENT  : integer := 16#20000000#;
+
+-- OPTM_DEP(madre, item)          visible mientras el item de esa madre este seleccionado
+-- OPTM_DEP2(madre, item_a, item_b)  visible con cualquiera de los dos
+--
+-- Se suman a la entrada de OPTM_GROUPS de la linea, igual que OPTM_G_STDSEL y compania.
+function OPTM_DEP(mother : natural; item : natural) return natural is
+begin
+   return OPTM_G_DEPENDENT + ((2 ** item) * 16#02000000#) + (mother * 16#00020000#);
+end function OPTM_DEP;
+function OPTM_DEP2(mother : natural; item_a : natural; item_b : natural) return natural is
+begin
+   return OPTM_G_DEPENDENT + ((2 ** item_a + 2 ** item_b) * 16#02000000#) + (mother * 16#00020000#);
+end function OPTM_DEP2;
+
+constant OPTM_GTC          : natural := 30;   -- M2M-UPSTREAM osm-deps: era 17. El marcador de
+                                             -- linea dependiente es el bit 29, asi que el vector
+                                             -- tiene que llegar hasta ahi. Maximo 30: con 31 se
+                                             -- desborda el rango entero de la expresion de abajo.
+                                             -- Ensancharlo es TRANSPARENTE: cada rama existente del
+                                             -- decodificador indexa los bits 0..16 sin cambios.
 
 -- @TODO/REMINDER: If we added in future more configuration constants that are not meant to be saved in the
 -- configuration file, such as OPTM_G_MOUNT_DRV and OPTM_G_LOAD_ROM, then we need to make sure that we
@@ -631,6 +654,20 @@ begin
             when SEL_OPTM_ICOUNT       => data_o <= x"00" & std_logic_vector(to_unsigned(OPTM_SIZE, 8));
             when SEL_OPTM_DIMENSIONS   => data_o <= getDXDY(OPTM_DX, OPTM_DY, index);
 
+
+            -- M2M-UPSTREAM osm-deps. El indice 4095 es el SONDEO: si no devuelve 0x2DEF, el
+            -- framework considera que este core no sirve la funcion y deja todas las lineas
+            -- visibles incondicionalmente, que es el comportamiento de siempre.
+            -- Formato de cada palabra: bit 12 = la linea es dependiente, bits 11-8 = mascara de
+            -- items de la madre, bits 7-0 = identificador del grupo madre.
+            when SEL_OPTM_DEPS         => if index = 4095 then
+                                             data_o <= x"2DEF";
+                                          else
+                                             data_o <= "000" &
+                                                std_logic(to_unsigned(OPTM_GROUPS(index), OPTM_GTC)(29)) &
+                                                std_logic_vector(to_unsigned(OPTM_GROUPS(index), OPTM_GTC)(28 downto 25)) &
+                                                std_logic_vector(to_unsigned(OPTM_GROUPS(index), OPTM_GTC)(24 downto 17));
+                                          end if;
             when others                => null;
          end case;
       end if;
