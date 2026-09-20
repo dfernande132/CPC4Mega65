@@ -97,6 +97,23 @@ architecture beh of floppy_phys is
    -- que no hay disquete (o no gira).
    constant C_INDEX_TO_CYC : natural := (G_CLK_HZ / 1000) * 500;
 
+   -- CPC4MEGA65 M4039: TIEMPO MUERTO DEL INDICE.
+   --
+   -- Hasta aqui el flanco de bajada se aceptaba SIEMPRE, sin antirrebote ni tiempo muerto. Eso
+   -- basto durante toda la fase de lectura, pero se demostro insuficiente al ESCRIBIR: con
+   -- WGATE abierto aparece un segundo 'indice' entre 50 y 250 ciclos (0,8-4 us) despues del
+   -- primero, y el escritor da la pista por terminada a los pocos microsegundos de empezarla.
+   --
+   -- La asimetria que lo delata: leyendo, el recuento de vueltas sale 1 por pista en las 40,
+   -- o sea que el indice es limpio. Solo se ensucia cuando el amplificador de escritura
+   -- conduce. f_index_i es la bola M2 y f_wgate_o/f_wdata_o son N3 y N4: contiguas y del mismo
+   -- banco, asi que el escalon de corriente se acopla a la entrada.
+   --
+   -- 50 ms no puede tapar un indice legitimo: a 300 RPM el siguiente esta a 200 ms, y aunque el
+   -- motor fuera un 20 % rapido seguirian siendo 167 ms. Endurece tambien la lectura.
+   constant C_INDEX_DEAD  : natural := (G_CLK_HZ / 1000) * 50;   -- 50 ms
+   signal   index_dead    : natural range 0 to C_INDEX_DEAD := 0;
+
    ------------------------------------------------------------------------------------------
    -- Polaridades. El interfaz es activo bajo; se dan nombre para que el codigo se lea solo.
    ------------------------------------------------------------------------------------------
@@ -151,11 +168,15 @@ begin
          wprot_sr  <= wprot_sr(1 downto 0)  & f_writeprotect_i;
 
          -- Flanco de bajada del indice (activo bajo) = una vuelta completa del disco
-         if index_sr(2) = '1' and index_sr(1) = '0' then
+         if index_sr(2) = '1' and index_sr(1) = '0' and index_dead = 0 then
             index_pulse <= '1';
+            index_dead  <= C_INDEX_DEAD;      -- M4039
             index_timer <= C_INDEX_TO_CYC;
          else
             index_pulse <= '0';
+            if index_dead /= 0 then
+               index_dead <= index_dead - 1;  -- M4039
+            end if;
             if index_timer /= 0 then
                index_timer <= index_timer - 1;
             end if;

@@ -278,15 +278,17 @@ constant C_MENU_FLOPPY_B       : natural := 10;
 constant C_MENU_FLOPPY_TEST    : natural := 12;
 constant C_MENU_FLOPPY_FMT     : natural := 14;
 constant C_MENU_FLOPPY_COPY    : natural := 15;   -- M4034: copiar la imagen al disquete
-constant C_MENU_FLOPPY_DENS    : natural := 16;
-constant C_MENU_FLIP_JOYS      : natural := 21;
-constant C_MENU_DPLL           : natural := 17;
-constant C_MENU_HDMI_16_9_50   : natural := 26;
-constant C_MENU_HDMI_4_3_50    : natural := 27;
-constant C_MENU_HDMI_5_4_50    : natural := 28;
-constant C_MENU_CRT_EMULATION  : natural := 32;
-constant C_MENU_HDMI_ZOOM      : natural := 33;
-constant C_MENU_IMPROVE_AUDIO  : natural := 34;
+constant C_MENU_FLOPPY_WB      : natural := 16;   -- M4035: reescribir pistas sucias, a mano
+constant C_MENU_FLOPPY_WBAUTO  : natural := 17;   -- M4035: ...y solo
+constant C_MENU_FLOPPY_DENS    : natural := 18;
+constant C_MENU_FLIP_JOYS      : natural := 23;
+constant C_MENU_DPLL           : natural := 19;
+constant C_MENU_HDMI_16_9_50   : natural := 28;
+constant C_MENU_HDMI_4_3_50    : natural := 29;
+constant C_MENU_HDMI_5_4_50    : natural := 30;
+constant C_MENU_CRT_EMULATION  : natural := 34;
+constant C_MENU_HDMI_ZOOM      : natural := 35;
+constant C_MENU_IMPROVE_AUDIO  : natural := 36;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -360,6 +362,11 @@ signal main_floppy_copy_en    : std_logic;
 signal main_floppy_copy_busy  : std_logic;
 signal main_floppy_copy_done  : std_logic;
 signal main_floppy_copy_refus : std_logic;
+signal main_floppy_wb_en      : std_logic;
+signal main_floppy_wb_auto    : std_logic;
+signal main_floppy_wb_active  : std_logic;
+signal main_floppy_wb_pending : std_logic;
+signal main_floppy_wrote_ok   : std_logic;   -- M4039
 signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
 signal main_dpll_en           : std_logic;   -- M4023: separador DPLL
 signal floppy_we_a            : std_logic;
@@ -558,6 +565,11 @@ begin
           floppy_copy_busy_o      => main_floppy_copy_busy,
           floppy_copy_done_o      => main_floppy_copy_done,
           floppy_copy_refused_o   => main_floppy_copy_refus,
+          floppy_wb_en_i          => main_floppy_wb_en,        -- M4035
+          floppy_wb_auto_i        => main_floppy_wb_auto,
+          floppy_wb_active_o      => main_floppy_wb_active,
+          floppy_wb_pending_o     => main_floppy_wb_pending,
+          floppy_wrote_ok_o       => main_floppy_wrote_ok,   -- M4039
          floppy_tgt_b_i          => main_floppy_tgt_b,
          dpll_en_i               => main_dpll_en,
          floppy_fmt_enable_i     => main_floppy_fmt_en,
@@ -875,9 +887,16 @@ begin
    -- floppy_write escribiendo - y lo unico que cambia es de donde salen los bytes. Asi que la
    -- copia tiene que encender tambien fmt_en; lo que la distingue es main_floppy_copy_en, que
    -- pone a floppy_write en modo origen externo y da el permiso de sujecion a floppy_copy.
+   main_floppy_wb_en   <= main_osm_control_i(C_MENU_FLOPPY_WB) and
+                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
+   -- El automatico NO se anula con la disquetera en Off: lo que se anula es la disquetera
+   -- entera, asi que el interruptor puede quedarse encendido entre sesiones sin efecto.
+   main_floppy_wb_auto <= main_osm_control_i(C_MENU_FLOPPY_WBAUTO) and
+                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_copy_en <= main_osm_control_i(C_MENU_FLOPPY_COPY) and
                           not main_osm_control_i(C_MENU_FLOPPY_OFF);
-   main_floppy_fmt_en <= (main_osm_control_i(C_MENU_FLOPPY_FMT) or main_floppy_copy_en) and
+   main_floppy_fmt_en <= (main_osm_control_i(C_MENU_FLOPPY_FMT) or main_floppy_copy_en or
+                          main_floppy_wb_active) and
                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_density <= not main_osm_control_i(C_MENU_FLOPPY_DENS);
    main_floppy_enable <= (main_osm_control_i(C_MENU_FLOPPY_TEST) and
@@ -1019,7 +1038,13 @@ begin
    -- mucho mas detalle; el LED solo tiene que responder "ha ido bien o no".
    floppy_led_col <= x"00FF00" when (led_finished = '1' and main_floppy_bad_trk = "00000"
                                      and main_floppy_fmt_refus = '0'
-                                      and main_floppy_copy_refus = '0') else   -- M4034
+                                      and main_floppy_copy_refus = '0'
+                                      -- M4039: y que se haya ESCRITO de verdad. Sin esto el
+                                      -- verde salio 40 veces seguidas con la puerta abierta
+                                      -- 50 ciclos. Un indicador que no puede decir que no,
+                                      -- no informa.
+                                      and (main_floppy_wrote_ok = '1' or
+                                           main_floppy_fmt_en = '0')) else
                      x"FF8000" when led_finished = '1' else
                      x"FF0000" when main_floppy_fmt_refus = '1' else
                      x"FFFFFF" when main_floppy_fmt_busy  = '1' else
@@ -1047,9 +1072,23 @@ begin
    floppy_led_own <= '1' when (main_floppy_enable = '1' and
                                not (led_finished = '1' and oneshot_cnt = 0)) else '0';
 
+   -- M4035: AMARILLO MIENTRAS QUEDE ALGO SIN VOLCAR AL DISQUETE.
+   --
+   -- Copiado de AExp (mega65.vhd:812-813), que hace lo mismo con sus pistas sucias de .adf. Es
+   -- la unica proteccion real contra sacar el disquete con datos a medias: ningun plazo puede
+   -- garantizar nada, pero una senal de 'todavia no' si. Apagado = todo escrito.
+   --
+   -- Manda sobre el LED de unidad normal pero NO sobre el de la disquetera fisica: mientras se
+   -- esta escribiendo de verdad, lo que hay que ver es el estado de la operacion.
+   --
+   -- Si se queda amarillo para siempre es que hay una pista sucia que NO se pudo leer entera y
+   -- por tanto no se puede regrabar. Es desagradable a proposito: esos datos no han llegado al
+   -- disquete y no van a llegar.
    main_drive_led_o     <= floppy_led_on when floppy_led_own = '1' else
+                           '1'           when main_floppy_wb_pending = '1' else
                            (main_drive_active or main_cache_busy);
    main_drive_led_col_o <= floppy_led_col when floppy_led_own = '1' else
+                           x"FFFF00"      when main_floppy_wb_pending = '1' else
                            x"0000FF"      when main_cache_busy = '1' else
                            x"FF0000";
 

@@ -68,6 +68,26 @@ entity floppy_copy is
 
       enable_i       : in  std_logic;                     -- opcion de menu "copiar disco"
 
+      -- M4035: MODO. '0' = copiar la imagen ENTERA (todas las pistas del .dsk).
+      -- '1' = REESCRITURA POR PISTAS: solo las que el CPC ha tocado, y solo si se leyeron
+      -- enteras. Es el mismo recorrido y el mismo escritor; lo que cambia es que pistas se
+      -- visitan y de que unidad sale la imagen (eso lo decide main.vhd).
+      mode_wb_i      : in  std_logic := '0';
+      dirty_i        : in  std_logic_vector(39 downto 0) := (others => '0');
+      ok_i           : in  std_logic_vector(39 downto 0) := (others => '0');
+      -- '1' = en esta pista no hay nada que escribir; floppy_scan pasa de largo sin abrir
+      -- WGATE. Sin esto habria que darle al secuenciador una lista de pistas, y el recorrido
+      -- lineal es justo la parte que ya esta validada.
+      skip_o         : out std_logic;
+      -- Pulso al terminar una pista, con su numero: main.vhd borra ese bit del mapa de sucias.
+      -- Sin esto el modo automatico reescribiria la misma pista para siempre.
+      wrote_o        : out std_logic;
+      wrote_trk_o    : out std_logic_vector(6 downto 0);
+      -- Pistas sucias que NO se pueden regrabar porque no se leyeron enteras. Se cuentan, no
+      -- se escriben a medias, y su bit de sucio NO se borra: esos datos no han llegado al
+      -- disquete y el LED tiene que seguir diciendolo.
+      tlm_blocked_o  : out std_logic_vector(7 downto 0);
+
       -- Lectura del buffer de montaje de la unidad ORIGEN
       buf_addr_o     : out std_logic_vector(17 downto 0);
       buf_q_i        : in  std_logic_vector(7 downto 0);
@@ -127,7 +147,7 @@ architecture beh of floppy_copy is
       CP_RD,                                             -- lector de un byte del buffer
       CP_SIG, CP_TRACKS, CP_SIDES, CP_TSZ_LO, CP_TSZ_HI, -- cabecera de disco
       CP_V_TSZ, CP_V_SIDE, CP_V_NSEC, CP_V_SEC_H, CP_V_SEC_N, CP_V_NEXT,  -- validacion
-      CP_ARM, CP_P_NSEC, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_NEXT, CP_FEED,
+      CP_ARM, CP_P_NSEC, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_NEXT, CP_FEED, CP_SKIP,
       CP_DONE, CP_REFUSED);
 
    signal state    : t_state := CP_IDLE;
@@ -170,6 +190,13 @@ architecture beh of floppy_copy is
    signal err_r    : unsigned(3 downto 0) := (others => '0');
    signal trk_cnt  : unsigned(7 downto 0) := (others => '0');
    signal scan_d   : std_logic := '0';
+   signal blk_cnt  : unsigned(7 downto 0) := (others => '0');
+   signal wrote_r  : std_logic := '0';
+   signal skip_r   : std_logic := '0';
+   signal cur_ix   : integer range 0 to 39;
+   signal wb_todo  : std_logic;    -- hay que escribir la pista que hay bajo la cabeza
+   signal wb_blk   : std_logic;    -- ...pero no se leyo entera
+   signal wb_in_r  : std_logic;
    signal en_d     : std_logic := '0';
 
    -- Direccion del byte de datos que pide el escritor
@@ -218,6 +245,19 @@ begin
    refused_o  <= '1' when state = CP_REFUSED else '0';
    err_code_o <= std_logic_vector(err_r);
    tlm_trk_o  <= std_logic_vector(trk_cnt);
+   tlm_blocked_o <= std_logic_vector(blk_cnt);
+   wrote_o       <= wrote_r;
+   -- M4036: la pista que se VA a grabar, no la que acaba de terminar (ver CP_P_NEXT).
+   wrote_trk_o   <= track_i;
+   skip_o        <= skip_r;
+
+   -- Decision por pista en modo reescritura, combinacional sobre los dos mapas medidos.
+   cur_ix  <= to_integer(unsigned(track_i)) when unsigned(track_i) < 40 else 0;
+   wb_in_r <= '1' when unsigned(track_i) < 40 else '0';
+   wb_todo <= '1' when (mode_wb_i = '1' and wb_in_r = '1' and
+                        dirty_i(cur_ix) = '1' and ok_i(cur_ix) = '1') else '0';
+   wb_blk  <= '1' when (mode_wb_i = '1' and wb_in_r = '1' and
+                        dirty_i(cur_ix) = '1' and ok_i(cur_ix) = '0') else '0';
 
    main_proc : process (clk_i)
       variable nxt_off : unsigned(18 downto 0);
@@ -225,6 +265,7 @@ begin
       if rising_edge(clk_i) then
          en_d   <= enable_i;
          scan_d <= scan_done_i;
+         wrote_r <= '0';      -- M4035: pulso de un ciclo
 
          if rst_i = '1' then
             state   <= CP_IDLE;
@@ -251,6 +292,8 @@ begin
                   if en_d = '0' then
                      err_r    <= (others => '0');
                      trk_cnt  <= (others => '0');
+                     blk_cnt  <= (others => '0');
+                     skip_r   <= '0';
                      p_ok     <= '0';
                      p_trk    <= (others => '1');
                      extended <= '0';
@@ -308,6 +351,11 @@ begin
                when CP_TSZ_HI =>
                   tsize(15 downto 8) <= unsigned(rd_data);
                   -- Empieza la validacion por la pista 0, que arranca justo tras la cabecera.
+                  -- M4035: sin lectura previa no hay mapa de pistas buenas, o sea que no hay
+                  -- forma de saber que pistas tenemos completas. Negarse es lo unico honesto.
+                  if mode_wb_i = '1' and ok_i = (ok_i'range => '0') then
+                     err_r <= x"9"; state <= CP_REFUSED;
+                  end if;
                   v_trk <= (others => '0');
                   v_off <= to_unsigned(256, 19);
                   if extended = '1' then
@@ -395,7 +443,23 @@ begin
                -- ---- preparacion de la pista que hay bajo la cabeza -------------------------
                when CP_ARM =>
                   p_ok  <= '0';
-                  if unsigned(track_i) < ntracks then
+                  -- M4037: si el secuenciador termina estando nosotros aqui, es que la mecanica
+                  -- no respondio (phys_error: normalmente, ningun disquete dentro). Sin esta
+                  -- salida nos quedariamos sujetando para siempre, con el motor girando y el LED
+                  -- amarillo, porque la peticion automatica no se suelta mientras queden pistas
+                  -- pendientes. No es un cuelgue, pero tampoco se sale solo.
+                  if scan_done_i = '1' and scan_d = '0' then
+                     state <= CP_DONE;
+                  elsif mode_wb_i = '1' and wb_todo = '0' then
+                     -- Nada que escribir en esta pista. Si es que esta sucia pero no se leyo
+                     -- entera, se cuenta y su bit de sucio se queda: esos datos no han llegado
+                     -- al disquete y hay que seguir diciendolo.
+                     if wb_blk = '1' then
+                        blk_cnt <= blk_cnt + 1;
+                     end if;
+                     p_trk <= unsigned(track_i);
+                     state <= CP_SKIP;
+                  elsif unsigned(track_i) < ntracks then
                      t_off   <= off_tab(to_integer(unsigned(track_i)));
                      addr_r  <= off_tab(to_integer(unsigned(track_i))) +
                                 to_unsigned(C_T_NSEC, 18);
@@ -436,6 +500,14 @@ begin
                   if p_sec + 1 >= to_integer(p_nsec) or p_sec = G_MAXSEC - 1 then
                      p_trk <= unsigned(track_i);
                      p_ok  <= '1';
+                     -- M4036: el bit de sucio se borra AQUI, al empezar, no al terminar. Si se
+                     -- borrara al terminar, una escritura del CPC en esta misma pista durante
+                     -- los 200 ms que dura la grabacion volveria a marcarla sucia y el borrado
+                     -- posterior se la comeria: esos datos no llegarian nunca al disquete y
+                     -- nada lo indicaria. Borrando al empezar, esa escritura vuelve a marcar la
+                     -- pista y la recoge la pasada siguiente. Grabar una pista de mas es
+                     -- barato; perder una escritura en silencio, no.
+                     wrote_r <= '1';
                      state <= CP_FEED;
                   else
                      p_sec   <= p_sec + 1;
@@ -454,6 +526,17 @@ begin
                      trk_cnt <= trk_cnt + 1;
                      p_ok    <= '0';
                      state   <= CP_ARM;
+                  end if;
+
+               -- Pista que no hay que escribir: se le dice al secuenciador que pase de largo.
+               -- WGATE no se abre, la cabeza solo se mueve.
+               when CP_SKIP =>
+                  skip_r <= '1';
+                  if scan_done_i = '1' and scan_d = '0' then
+                     state <= CP_DONE;
+                  elsif unsigned(track_i) /= p_trk then
+                     skip_r <= '0';
+                     state  <= CP_ARM;
                   end if;
 
                when CP_DONE =>

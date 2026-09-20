@@ -105,6 +105,20 @@ entity floppy_dsk is
       tlm_wredge_i   : in  std_logic_vector(15 downto 0) := (others => '0');
       tlm_cperr_i    : in  std_logic_vector(3 downto 0)  := (others => '0');
       tlm_cptrk_i    : in  std_logic_vector(7 downto 0)  := (others => '0');
+      -- M4036: el hueco mas largo entre dos escrituras consecutivas del u765 (ms) y cuantas
+      -- veces se disparo el volcado automatico. El primero es el SUELO del plazo de espera:
+      -- por debajo de el, el automatico salta a mitad de una operacion del CPC.
+      tlm_gapmax_i   : in  std_logic_vector(15 downto 0) := (others => '0');
+      tlm_fires_i    : in  std_logic_vector(7 downto 0)  := (others => '0');
+      tlm_blk_i      : in  std_logic_vector(7 downto 0)  := (others => '0');
+      -- M4038: por que se cerro la puerta de escritura (ver floppy_write)
+      tlm_abort_i    : in  std_logic_vector(7 downto 0)  := (others => '0');
+      tlm_idxend_i   : in  std_logic_vector(7 downto 0)  := (others => '0');
+      tlm_stopst_i   : in  std_logic_vector(7 downto 0)  := (others => '0');
+      tlm_wgmax_i    : in  std_logic_vector(31 downto 0) := (others => '0');
+      -- M4039: indices vistos con WGATE abierto, y los que la ventana ciega ha rechazado
+      tlm_idxwr_i    : in  std_logic_vector(15 downto 0) := (others => '0');
+      tlm_blind_i    : in  std_logic_vector(15 downto 0) := (others => '0');
       tlm_starts_i   : in  std_logic_vector(7 downto 0);
       tlm_refus_i    : in  std_logic_vector(7 downto 0);
 
@@ -128,7 +142,12 @@ entity floppy_dsk is
       --   3 = 50.000 .. 150.000               -> faltan sectores
       --   4 = 150.000 .. 250.000              -> ESPERADO a partir de M4013
       --   5 = mas de 250.000                  -> se sigue escribiendo por duplicado
-      wr_code_o      : out std_logic_vector(4 downto 0)
+      wr_code_o      : out std_logic_vector(4 downto 0);
+
+      -- M4035: el mapa de pistas leidas enteras sale tambien FUERA del volcado, porque es el
+      -- permiso de escritura de la reescritura por pistas: sin el no hay forma de negarse a
+      -- regrabar una pista cuyo contenido verdadero no tenemos.
+      ok_map_o       : out std_logic_vector(G_TRACKS - 1 downto 0)
    );
 end floppy_dsk;
 
@@ -226,6 +245,7 @@ begin
                  "00011" when wr_count < 150000 else
                  "00100" when wr_count < 250000 else
                  "00101";
+   ok_map_o   <= ok_map;   -- M4035
 
    -- M4019: reloj de milisegundos libre desde el arranque. Va aparte del FSM a proposito:
    -- tiene que seguir corriendo entre recorridos para que dos volcados nunca den la misma hora.
@@ -253,7 +273,11 @@ begin
       -- cuadraba. Los demas campos (hasta 0x53) si estaban dentro de rango y son validos.
       -- Leccion: un instrumento tambien necesita comprobarse, y aqui el aviso estaba delante
       -- (un bit declarado constante a cero salia a uno) y se tardo en tirar del hilo.
-      variable tix  : integer range 0 to 63;
+      -- M4040: 0 a 127, no a 63. El bloque global llega ya al indice 65 y los indices 64 y 65
+      -- envolvian a 0 y 1, devolviendo las letras de "CPCTLM" (0x43 = 67, 0x50 = 80). Es
+      -- EXACTAMENTE el desbordamiento de M4029, en el mismo fichero y con la misma variable,
+      -- por ampliar la telemetria sin ensanchar el indice. Con 127 hay sitio para el doble.
+      variable tix  : integer range 0 to 127;
    begin
       if rising_edge(clk_i) then
          we_r <= '0';
@@ -472,7 +496,7 @@ begin
                   tix    := to_integer(hdr_idx);
                   case tix is
                      when 0 to 5 => data_r <= C_TLM_SIG(tix);          -- "CPCTLM"
-                     when 6      => data_r <= x"03";                   -- version del mapa (M4034)
+                     when 6      => data_r <= x"06";                   -- version del mapa (M4039)
                      when 7      => data_r <= std_logic_vector(nonce);
                      when 8      => data_r <= std_logic_vector(wr_count(7 downto 0));
                      when 9      => data_r <= std_logic_vector(wr_count(15 downto 8));
@@ -531,10 +555,29 @@ begin
                       when 47     => data_r <= tlm_wredge_i(15 downto 8);
                       when 48     => data_r <= "0000" & tlm_cperr_i;
                       when 49     => data_r <= tlm_cptrk_i;
+                      -- M4036, 0x66..0x69
+                      when 50     => data_r <= tlm_gapmax_i(7 downto 0);
+                      when 51     => data_r <= tlm_gapmax_i(15 downto 8);
+                      when 52     => data_r <= tlm_fires_i;
+                      when 53     => data_r <= tlm_blk_i;
+                      -- M4038, 0x6A..0x71
+                      when 54     => data_r <= tlm_abort_i;
+                      when 55     => data_r <= tlm_idxend_i;
+                      when 56     => data_r <= tlm_stopst_i;
+                      when 57     => data_r <= x"00";
+                      when 58     => data_r <= tlm_wgmax_i( 7 downto  0);
+                      when 59     => data_r <= tlm_wgmax_i(15 downto  8);
+                      when 60     => data_r <= tlm_wgmax_i(23 downto 16);
+                      when 61     => data_r <= tlm_wgmax_i(31 downto 24);
+                      -- M4039, 0x72..0x75
+                      when 62     => data_r <= tlm_idxwr_i( 7 downto 0);
+                      when 63     => data_r <= tlm_idxwr_i(15 downto 8);
+                      when 64     => data_r <= tlm_blind_i( 7 downto 0);
+                      when 65     => data_r <= tlm_blind_i(15 downto 8);
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 49 then
+                  if hdr_idx = 65 then
                      -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
                      -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
                      -- nonce y los contadores se acumulan. El volcado B de M4023 salio con

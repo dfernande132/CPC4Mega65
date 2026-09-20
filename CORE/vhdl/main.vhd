@@ -111,6 +111,17 @@ entity main is
       floppy_copy_busy_o      : out std_logic;
       floppy_copy_done_o      : out std_logic;
       floppy_copy_refused_o   : out std_logic;
+      -- M4035: reescritura por pistas
+      floppy_wb_en_i          : in  std_logic := '0';   -- boton manual del menu
+      floppy_wb_auto_i        : in  std_logic := '0';   -- interruptor de automatico
+      floppy_wb_active_o      : out std_logic;          -- '1' = hay una reescritura en marcha
+      floppy_wb_pending_o     : out std_logic;          -- '1' = quedan pistas sin volcar
+      -- M4039: '1' = la ultima operacion de escritura abrio WGATE durante al menos media
+      -- vuelta. Sin esto el LED verde de fin de operacion solo miraba que el recorrido
+      -- terminara, no que se hubiera escrito algo - y en M4034..M4038 salio verde 40 veces
+      -- seguidas con la puerta abierta 50 ciclos. Un indicador que no puede decir que no,
+      -- no informa.
+      floppy_wrote_ok_o       : out std_logic;
       -- M4014: a que unidad va la disquetera fisica ('0' = A:, '1' = B:). Hace falta aqui
       -- para saber en cual de las dos hay que volver a disparar el montaje al terminar.
       floppy_tgt_b_i          : in  std_logic;
@@ -601,6 +612,56 @@ signal scan_trk_last      : std_logic_vector(6 downto 0);
 -- misma leccion de M4029 - un instrumento que no separa dos causas no es un instrumento.
 signal wr_edges           : unsigned(15 downto 0) := (others => '0');
 signal wr_any_d           : std_logic := '0';
+
+-- CPC4MEGA65 M4035: reescritura por pistas
+--
+-- El disparo automatico copia el patron de M2M/AExp: una cuenta atras de milisegundos que se
+-- RECARGA CON CADA ESCRITURA, no con la primera. O sea que no es 'un segundo desde que se
+-- ensucio' sino 'un segundo de silencio del controlador'. Un SAVE del CPC toca la misma pista
+-- varias veces seguidas; sin esto se reescribiria la pista entera una vez por sector.
+--
+-- 1 s y no 2 como AExp: alli lo que se vuelca es un fichero en la tarjeta, que no se puede
+-- sacar de golpe. Aqui es un disquete que el usuario puede extraer con la mano, asi que cuanto
+-- antes llegue el dato, mejor. Lo que de verdad protege no es el plazo sino el LED AMARILLO
+-- mientras quede algo pendiente: ningun temporizador puede garantizar que no saquen el disco,
+-- una senal de 'todavia no' si.
+constant C_WB_IDLE_MS     : natural := 500;   -- M4038: medido, el suelo real son 189 ms
+constant C_MS_CYC         : natural := G_CLK_HZ / 1000;
+signal wb_ms_pre          : natural range 0 to C_MS_CYC - 1 := 0;
+signal wb_cnt             : natural range 0 to C_WB_IDLE_MS := 0;
+signal wb_auto_req        : std_logic := '0';
+-- M4036: INSTRUMENTO PARA ELEGIR EL PLAZO CON DATOS EN VEZ DE CON GUSTO.
+-- El plazo tiene un suelo: el hueco mas largo entre dos escrituras CONSECUTIVAS del u765
+-- dentro de una misma operacion del CPC. Si el plazo baja de ahi, se dispara a mitad de un
+-- SAVE. Nadie ha medido nunca ese hueco, asi que 1000 ms y 300 ms son igual de inventados.
+-- Esto lo mide, y el numero definitivo sale del volcado.
+signal wb_gap_ms          : unsigned(15 downto 0) := (others => '0');
+signal wb_gap_max         : unsigned(15 downto 0) := (others => '0');
+signal wb_fires           : unsigned(7 downto 0) := (others => '0');
+-- M4037: y se PUBLICAN fotografiados, no en vivo. El volcado se escribe al final de una lectura
+-- y estos contadores se ponen a cero al principio de esa MISMA lectura, asi que en vivo
+-- publicaban siempre cero. Es el mismo fallo que ya se arreglo para el mapa de pistas sucias en
+-- M4033 (dirty_snap) y que aqui se repitio sin darse cuenta.
+signal wb_gap_max_s       : unsigned(15 downto 0) := (others => '0');
+signal wb_fires_s         : unsigned(7 downto 0) := (others => '0');
+signal wr_edges_s         : unsigned(15 downto 0) := (others => '0');
+signal fmt_abort          : std_logic_vector(7 downto 0);   -- M4038
+signal fmt_idxend         : std_logic_vector(7 downto 0);
+signal fmt_stopst         : std_logic_vector(7 downto 0);
+signal fmt_wgmax          : std_logic_vector(31 downto 0);
+signal fmt_idxwr          : std_logic_vector(15 downto 0);   -- M4039
+signal fmt_blind          : std_logic_vector(15 downto 0);
+signal wb_active          : std_logic;
+signal wb_mode            : std_logic;
+signal wb_skip            : std_logic;
+signal copy_wrote         : std_logic;
+signal copy_wrote_trk     : std_logic_vector(6 downto 0);
+signal copy_blocked       : std_logic_vector(7 downto 0);
+signal ok_map             : std_logic_vector(39 downto 0);
+signal dchg_d             : std_logic := '1';
+signal fmt_skip           : std_logic;
+signal floppy_src_en      : std_logic;
+signal floppy_cp_on       : std_logic;
 
 -- M4018 fue una build de MEDIDA: retrasaba artificialmente la subida del acuse que ve el u765
 -- para averiguar cuanta latencia por bloque tolera la cadena, que es LA pregunta que decidia
@@ -1173,7 +1234,35 @@ begin
          end if;
          dirty_wr_d <= wr_v;
 
-         if floppy_dsk_start = '1' then
+         -- M4035: CAMBIO DE DISQUETE. Primer uso de f_diskchanged_i, que lleva cableado desde
+         -- M4A sin gastarse. Si se saca el disquete con pistas pendientes y se mete otro,
+         -- escribir esas pistas en el disco nuevo lo destrozaria: eran para un disco que ya no
+         -- esta.
+         --
+         -- HASTA DONDE LLEGA ESTA PROTECCION, que es menos de lo que parece: la linea /DSKCHG
+         -- solo la conduce la mecanica MIENTRAS ESTA SELECCIONADA, y nosotros solo la
+         -- seleccionamos durante una operacion. Entre operaciones no vemos nada. Encima, el
+         -- recalibrado con el que empieza cada operacion da un paso, y un paso con disco dentro
+         -- es justo lo que BORRA /DSKCHG, asi que mirarla despues del recalibrado tampoco
+         -- serviria. O sea que esto caza que saquen el disquete EN MEDIO de una reescritura, y
+         -- nada mas.
+         --
+         -- Lo que de verdad protege es que la ventana sea corta (1 s de silencio y a escribir)
+         -- y que el LED este AMARILLO mientras quede algo pendiente. Ningun temporizador puede
+         -- garantizar que no saquen el disco; una senal de 'todavia no' si.
+         if floppy_ready = '0' then
+            dchg_d <= '1';       -- sin seleccion la linea no significa nada
+         else
+            dchg_d <= f_diskchanged_i;
+         end if;
+
+         if floppy_ready = '1' and f_diskchanged_i = '0' and dchg_d = '1' then
+            dirty_map   <= (others => '0');
+            dirty_state <= 0;
+         elsif copy_wrote = '1' and unsigned(copy_wrote_trk) < 40 then
+            -- Pista ya grabada en el disquete: deja de estar pendiente.
+            dirty_map(to_integer(unsigned(copy_wrote_trk))) <= '0';
+         elsif floppy_dsk_start = '1' then
             -- El volcado de telemetria se escribe al FINAL de un recorrido, asi que si aqui
             -- solo se borrara, el mapa que se publica seria siempre cero. Se fotografia antes
             -- de borrar: lo que se publica es 'lo que el CPC escribio entre la lectura
@@ -1535,12 +1624,107 @@ begin
 
    -- Origen de la copia: la unidad que NO sea la disquetera fisica. Si la interna esta puesta
    -- de A:, se copia desde B:, porque si no el origen y el destino serian el mismo sitio.
-   copy_buf_q <= floppy_buf_qb_i when floppy_tgt_b_i = '0' else floppy_buf_qa_i;
+   -- M4035: DE DONDE SALE LA IMAGEN, que es lo unico que distingue los dos modos aparte de
+   -- que pistas se visitan.
+   --   copia         : la unidad que NO es la disquetera fisica (si la interna esta de A:, se
+   --                   copia desde B:; si no, origen y destino serian el mismo sitio).
+   --   reescritura   : la unidad que SI lo es, que es donde esta la imagen que leimos del
+   --                   disquete y que el CPC ha ido modificando.
+   copy_buf_q <= floppy_buf_qa_i when (wb_mode = '1') = (floppy_tgt_b_i = '0')
+                 else floppy_buf_qb_i;
+
+   -- Reescritura en marcha: la pide el boton del menu o el disparo automatico.
+   wb_active <= floppy_wb_en_i or wb_auto_req;
+   wb_mode   <= wb_active;                 -- copia y reescritura no se solapan nunca
+   -- M4035: el modulo trabaja en los DOS modos; wb_mode dice en cual.
+   floppy_cp_on  <= floppy_copy_en_i or wb_active;
+   floppy_src_en <= floppy_cp_on;
+
+   floppy_wb_active_o  <= wb_active;
+   floppy_wb_pending_o <= '1' when dirty_map /= (dirty_map'range => '0') else '0';
+
+   -- Disparo automatico. Ver el comentario largo de las declaraciones: la cuenta se recarga con
+   -- CADA escritura, asi que mide silencio del controlador, no antiguedad del dato.
+   wb_auto_proc : process (clk_main_i)
+      variable pend_v : std_logic;
+   begin
+      if rising_edge(clk_main_i) then
+         -- Solo cuenta lo que se PUEDE escribir. Una pista sucia que no se leyo entera se queda
+         -- pendiente para siempre a proposito -no tenemos su contenido verdadero- y si entrara
+         -- aqui haria que el automatico recorriera el disco cada segundo sin poder arreglarlo.
+         if (dirty_map and ok_map) /= (dirty_map'range => '0') then
+            pend_v := '1';
+         else
+            pend_v := '0';
+         end if;
+
+         -- M4036: los contadores de medida se ponen a cero al empezar una LECTURA, que es el
+         -- instante de referencia de todo lo demas. Van AQUI y no en dirty_proc: dos procesos
+         -- escribiendo la misma senal son dos controladores, y Vivado lo rechaza.
+         if floppy_dsk_start = '1' then
+               wb_gap_max_s <= wb_gap_max;   -- M4037: foto antes de borrar
+               wb_fires_s   <= wb_fires;
+            wb_gap_max <= (others => '0');
+            wb_fires   <= (others => '0');
+            wb_gap_ms  <= (others => '0');
+         end if;
+
+         if wb_ms_pre = C_MS_CYC - 1 then
+            wb_ms_pre <= 0;
+            -- M4036: reloj de milisegundos del hueco en curso
+            if wb_gap_ms /= x"FFFF" then
+               wb_gap_ms <= wb_gap_ms + 1;
+            end if;
+            if wb_cnt /= 0 then
+               wb_cnt <= wb_cnt - 1;
+            end if;
+         else
+            wb_ms_pre <= wb_ms_pre + 1;
+         end if;
+
+         -- Cada escritura del u765 reinicia la espera.
+         if u765_sd_wr /= "00" and wr_any_d = '0' then
+            wb_cnt    <= C_WB_IDLE_MS;
+            -- M4036: cerrar el hueco que acaba de terminar y quedarse con el mayor
+            if wb_gap_ms > wb_gap_max then
+               wb_gap_max <= wb_gap_ms;
+            end if;
+            wb_gap_ms <= (others => '0');
+            wb_ms_pre <= 0;
+         end if;
+
+         if floppy_wb_auto_i = '0' or floppy_copy_en_i = '1' or floppy_wb_en_i = '1' then
+            -- Con el automatico apagado, o mientras haya una operacion manual en marcha, este
+            -- disparo no existe.
+            wb_auto_req <= '0';
+         elsif wb_auto_req = '1' then
+            -- M4037: se suelta cuando la OPERACION termina, no cuando el mapa se vacia.
+            --
+            -- Mirar el mapa aqui era un fallo grave y propio: desde M4036 el bit de sucio se
+            -- borra al EMPEZAR a grabar cada pista, para no comerse una escritura que llegue
+            -- durante los 200 ms que dura. Con una sola pista sucia eso vaciaba el mapa a los
+            -- pocos microsegundos de abrir WGATE, este permiso caia, con el caia
+            -- main_floppy_fmt_en, y con el el enable_i del propio escritor: la puerta se cerraba
+            -- a mitad de pista. En hardware se vio como 22 ciclos de WGATE EN TOTAL (0,34 us)
+            -- repartidos en 5 arranques, o sea no se grabo nada.
+            --
+            -- El mapa es la condicion de DISPARO; la de MANTENIMIENTO es que la operacion siga
+            -- viva. Confundirlas quita el permiso por debajo del que esta trabajando.
+            if copy_done = '1' or copy_refused = '1' then
+               wb_auto_req <= '0';
+            end if;
+         elsif pend_v = '1' and wb_cnt = 0 then
+            wb_auto_req <= '1';
+            wb_fires    <= wb_fires + 1;    -- M4036
+         end if;
+      end if;
+   end process wb_auto_proc;
 
    -- El bus de direcciones del buffer es uno solo. floppy_dsk lo usa para ESCRIBIR mientras se
    -- lee el disquete; el copiador lo usa para LEER mientras se escribe. Nunca a la vez: en modo
    -- copia floppy_scan va en modo formateo y no pulsa dsk_start.
-   floppy_buf_addr_o <= copy_buf_addr when floppy_copy_en_i = '1' else dsk_buf_addr;
+   floppy_buf_addr_o <= copy_buf_addr when (floppy_copy_en_i or wb_active) = '1'
+                        else dsk_buf_addr;
 
    -- M4034: flancos de escritura del u765, sin filtrar. Ver la declaracion.
    wr_edge_proc : process (clk_main_i)
@@ -1550,6 +1734,7 @@ begin
          any_v := u765_sd_wr(0) or u765_sd_wr(1);
          wr_any_d <= any_v;
          if floppy_dsk_start = '1' then
+               wr_edges_s <= wr_edges;       -- M4037: foto antes de borrar
             wr_edges <= (others => '0');
          elsif any_v = '1' and wr_any_d = '0' and wr_edges /= x"FFFF" then
             wr_edges <= wr_edges + 1;
@@ -1562,7 +1747,15 @@ begin
          clk_i       => clk_main_i,
          rst_i       => reset_hard_i,
 
-         enable_i    => floppy_copy_en_i,
+         enable_i    => floppy_cp_on,      -- M4035 fix: copia O reescritura
+
+         mode_wb_i   => wb_mode,
+         dirty_i     => dirty_map,
+         ok_i        => ok_map,
+         skip_o      => wb_skip,
+         wrote_o     => copy_wrote,
+         wrote_trk_o => copy_wrote_trk,
+         tlm_blocked_o => copy_blocked,
 
          buf_addr_o  => copy_buf_addr,
          buf_q_i     => copy_buf_q,
@@ -1590,9 +1783,13 @@ begin
 
    -- La sujecion solo existe en modo copia. En un formateo normal no hay cabecera que leer y
    -- floppy_scan tiene que arrancar el escritor en cuanto la cabeza este colocada.
-   fmt_hold      <= copy_hold     when floppy_copy_en_i = '1' else '0';
-   scan_trk_last <= copy_trk_last when floppy_copy_en_i = '1' else
+   fmt_hold      <= copy_hold     when (floppy_copy_en_i or wb_active) = '1' else '0';
+   fmt_skip      <= wb_skip      when wb_active = '1' else '0';
+   scan_trk_last <= copy_trk_last when (floppy_copy_en_i or wb_active) = '1' else
                     std_logic_vector(to_unsigned(39, 7));
+
+   -- Media vuelta = 6,4 M ciclos. Una pista entera son 12,8 M.
+   floppy_wrote_ok_o <= '1' when unsigned(fmt_wgmax) > to_unsigned(6_400_000, 32) else '0';
 
    floppy_copy_busy_o    <= copy_busy;
    floppy_copy_done_o    <= copy_done;
@@ -1645,9 +1842,19 @@ begin
          tlm_wgate_i    => floppy_fmt_wgate,
          tlm_wdata_i    => floppy_fmt_wdata,
          tlm_dirty_i    => dirty_snap,          -- M4033
-         tlm_wredge_i   => std_logic_vector(wr_edges),   -- M4034
+         tlm_wredge_i   => std_logic_vector(wr_edges_s),   -- M4037
          tlm_cperr_i    => copy_err,
          tlm_cptrk_i    => copy_tlm_trk,
+         tlm_gapmax_i   => std_logic_vector(wb_gap_max_s),   -- M4037
+         tlm_fires_i    => std_logic_vector(wb_fires_s),
+         tlm_blk_i      => copy_blocked,
+         tlm_abort_i    => fmt_abort,       -- M4038
+         tlm_idxend_i   => fmt_idxend,
+         tlm_stopst_i   => fmt_stopst,
+         tlm_wgmax_i    => fmt_wgmax,
+         tlm_idxwr_i    => fmt_idxwr,       -- M4039
+         tlm_blind_i    => fmt_blind,
+         ok_map_o       => ok_map,          -- M4035
          tlm_starts_i   => floppy_fmt_starts,
          tlm_refus_i    => floppy_fmt_refus
       ); -- i_floppy_dsk
@@ -1686,6 +1893,7 @@ begin
          fmt_done_i     => floppy_fmt_done,
          fmt_refused_i  => floppy_fmt_refused,
          fmt_hold_i     => fmt_hold,        -- M4034
+         fmt_skip_i     => fmt_skip,        -- M4035
          trk_last_i     => scan_trk_last,   -- M4034
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
@@ -1732,7 +1940,7 @@ begin
 
          -- M4034: modo origen externo. Con la opcion de copia apagada esto vale '0' y el
          -- modulo formatea exactamente igual que hasta ahora.
-         src_en_i   => floppy_copy_en_i,
+         src_en_i   => floppy_src_en,
          src_nsec_i => copy_w_nsec,
          src_id_c_i => copy_w_id_c,
          src_id_h_i => copy_w_id_h,
@@ -1747,7 +1955,13 @@ begin
          tlm_wgate_o  => floppy_fmt_wgate,
          tlm_wdata_o  => floppy_fmt_wdata,
          tlm_starts_o => floppy_fmt_starts,
-         tlm_refus_o  => floppy_fmt_refus
+         tlm_refus_o  => floppy_fmt_refus,
+         tlm_abort_o  => fmt_abort,       -- M4038
+         tlm_idxend_o => fmt_idxend,
+         tlm_stopst_o => fmt_stopst,
+         tlm_wgmax_o  => fmt_wgmax,
+         tlm_idxwr_o  => fmt_idxwr,       -- M4039
+         tlm_blind_o  => fmt_blind
       ); -- i_floppy_write
 
    -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,

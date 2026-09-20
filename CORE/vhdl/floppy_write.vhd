@@ -98,7 +98,32 @@ entity floppy_write is
       tlm_wgate_o    : out std_logic_vector(31 downto 0);  -- ciclos con WGATE abierto
       tlm_wdata_o    : out std_logic_vector(31 downto 0);  -- transiciones emitidas
       tlm_starts_o   : out std_logic_vector(7 downto 0);   -- formateos arrancados
-      tlm_refus_o    : out std_logic_vector(7 downto 0)    -- rechazados por proteccion
+      tlm_refus_o    : out std_logic_vector(7 downto 0);   -- rechazados por proteccion
+
+      -- CPC4MEGA65 M4038: POR QUE SE CIERRA LA PUERTA.
+      --
+      -- El contador de ciclos de WGATE dice CUANTO se escribio; no dice POR QUE se dejo de
+      -- escribir, y son dos preguntas distintas. En M4036 y M4037 salio 22 y 170 -o sea, cero-
+      -- y se gastaron dos builds adivinando la causa. Esto responde la segunda pregunta:
+      --   tlm_abort_o     cierres con enable_i ya caido = alguien quito el permiso
+      --   tlm_idxend_o    cierres por indice = final NORMAL de pista
+      --   tlm_stopst_o    en que estado estaba la maquina en el ultimo cierre
+      --   tlm_wgmax_o     la apertura mas larga en ciclos (una pista entera son ~12,8 M)
+      -- Y ademas los dos primeros contadores NO se reinician en cada arranque, al reves que
+      -- wgate_cyc: acumulan durante todo el recorrido, que es lo que hace falta para ver un
+      -- patron en vez de una foto del ultimo intento.
+      tlm_abort_o    : out std_logic_vector(7 downto 0);
+      tlm_idxend_o   : out std_logic_vector(7 downto 0);
+      tlm_stopst_o   : out std_logic_vector(7 downto 0);
+      tlm_wgmax_o    : out std_logic_vector(31 downto 0);
+
+      -- M4039: pulsos de indice vistos CON WGATE ABIERTO, acumulados en todo el recorrido.
+      -- Una pista bien escrita ve EXACTAMENTE UNO: el que la cierra al completar la vuelta.
+      -- Si sale el doble que pistas escritas, el acoplamiento del indice queda demostrado en
+      -- vez de supuesto. Y tlm_blind_o cuenta los que la ventana ciega ha RECHAZADO, que es la
+      -- prueba directa de que el arreglo esta actuando.
+      tlm_idxwr_o    : out std_logic_vector(15 downto 0);
+      tlm_blind_o    : out std_logic_vector(15 downto 0)
    );
 end floppy_write;
 
@@ -122,6 +147,25 @@ architecture beh of floppy_write is
    constant C_CELLS_C2 : std_logic_vector(15 downto 0) := x"5224";
 
    -- Longitudes del formato DATA del CPC
+   -- CPC4MEGA65 M4039: VENTANA CIEGA DEL INDICE.
+   --
+   -- Una pista dura una vuelta entera: 200 ms a 300 RPM. No puede terminar legitimamente a los
+   -- 4 us de empezar, y sin embargo eso es lo que se midio en hardware una y otra vez (aperturas
+   -- de WGATE de 50 a 250 ciclos, en las 40 pistas, en los dos modos y en dos builds separados
+   -- por cinco versiones, incluida la que copio Bruce Lee y cuyo disquete arranca en un CPC
+   -- real). El indice se ensucia cuando el amplificador de escritura conduce.
+   --
+   -- Durante los primeros 100 ms tras abrir la puerta se ignora el indice. Es la mitad de una
+   -- vuelta: no puede tapar el indice bueno ni con el motor un 20 % rapido, y convierte un
+   -- rebote en algo inocuo en vez de fatal.
+   constant C_IDX_BLIND : natural := (G_CLK_HZ / 1000) * 100;   -- 100 ms
+   -- Con G_CLK_HZ menor que 1000 la constante seria 0, wg_age nunca incrementaria y la
+   -- ventana desapareceria EN SILENCIO. De ahi la asercion de mas abajo: lo convierte en un
+   -- error de elaboracion en vez de en un comportamiento raro en hardware.
+   signal   wg_age      : natural range 0 to C_IDX_BLIND := 0;  -- ciclos con la puerta abierta
+   signal   idxwr_cnt   : unsigned(15 downto 0) := (others => '0');
+   signal   blind_cnt   : unsigned(15 downto 0) := (others => '0');
+
    constant C_GAP4A : natural := 80;
    constant C_SYNC  : natural := 12;
    constant C_GAP1  : natural := 50;
@@ -165,6 +209,12 @@ architecture beh of floppy_write is
    signal wdata_cnt  : unsigned(31 downto 0) := (others => '0');
    signal starts_cnt : unsigned(7 downto 0)  := (others => '0');
    signal refus_cnt  : unsigned(7 downto 0)  := (others => '0');
+   signal abort_cnt  : unsigned(7 downto 0)  := (others => '0');   -- M4038
+   signal idxend_cnt : unsigned(7 downto 0)  := (others => '0');
+   signal stop_st    : unsigned(7 downto 0)  := (others => '0');
+   signal wg_run     : unsigned(31 downto 0) := (others => '0');
+   signal wg_max     : unsigned(31 downto 0) := (others => '0');
+   signal wgate_d    : std_logic := '1';
 
    -- El pulso de indice dura UN ciclo, y la maquina de formato solo mira su estado cuando el
    -- motor de celdas esta libre (una vez cada 2048 ciclos). Muestrearlo directamente ahi
@@ -211,6 +261,10 @@ architecture beh of floppy_write is
 
 begin
 
+   assert C_IDX_BLIND > 0
+      report "C_IDX_BLIND degenerado: la ventana ciega del indice no existiria"
+      severity failure;
+
    f_wgate_o <= wgate_r;
    f_wdata_o <= wdata_r;
 
@@ -221,6 +275,12 @@ begin
    tlm_wdata_o  <= std_logic_vector(wdata_cnt);
    tlm_starts_o <= std_logic_vector(starts_cnt);
    tlm_refus_o  <= std_logic_vector(refus_cnt);
+   tlm_abort_o  <= std_logic_vector(abort_cnt);    -- M4038
+   tlm_idxend_o <= std_logic_vector(idxend_cnt);
+   tlm_stopst_o <= std_logic_vector(stop_st);
+   tlm_wgmax_o  <= std_logic_vector(wg_max);
+   tlm_idxwr_o  <= std_logic_vector(idxwr_cnt);    -- M4039
+   tlm_blind_o  <= std_logic_vector(blind_cnt);
 
    stats_proc : process (clk_i)
    begin
@@ -251,6 +311,30 @@ begin
 
             if wgate_r = '0' and wgate_cyc /= x"FFFFFFFF" then
                wgate_cyc <= wgate_cyc + 1;
+            end if;
+
+            -- M4038: apertura en curso, la mayor vista, y el motivo del ultimo cierre.
+            -- M4039: indices vistos con la puerta abierta
+            if index_i = '1' and wgate_r = '0' and idxwr_cnt /= x"FFFF" then
+               idxwr_cnt <= idxwr_cnt + 1;
+            end if;
+
+            wgate_d <= wgate_r;
+            if wgate_r = '0' then
+               if wg_run /= x"FFFFFFFF" then
+                  wg_run <= wg_run + 1;
+               end if;
+            elsif wgate_d = '0' then
+               if wg_run > wg_max then
+                  wg_max <= wg_run;
+               end if;
+               wg_run   <= (others => '0');
+               stop_st  <= to_unsigned(t_state'pos(state), 8);
+               if enable_i = '0' then
+                  if abort_cnt /= x"FF" then abort_cnt <= abort_cnt + 1; end if;
+               else
+                  if idxend_cnt /= x"FF" then idxend_cnt <= idxend_cnt + 1; end if;
+               end if;
             end if;
 
             -- Flanco de bajada de WDATA = una transicion de flujo escrita
@@ -336,6 +420,15 @@ begin
    begin
       if rising_edge(clk_i) then
          load_req <= '0';
+
+         -- M4039: edad de la apertura actual de WGATE
+         if wgate_r = '0' then
+            if wg_age /= C_IDX_BLIND then
+               wg_age <= wg_age + 1;
+            end if;
+         else
+            wg_age <= 0;
+         end if;
 
          if index_i = '1' then
             idx_seen <= '1';
@@ -520,7 +613,9 @@ begin
                            load_val <= C_GAP; load_req <= '1';
                            if cnt = 0 then
                               if (src_en_i = '0' and sec_idx = G_SECTORS - 1) or
-                                 (src_en_i = '1' and sec_idx + 1 >= unsigned(src_nsec_i)) then
+                                 (src_en_i = '1' and unsigned(src_nsec_i) /= 0 and
+                                  sec_idx + 1 >= unsigned(src_nsec_i)) or
+                                 (src_en_i = '1' and sec_idx = G_SECTORS - 1) then
                                  state <= W_GAP4B;
                               else
                                  sec_idx <= sec_idx + 1;
@@ -546,10 +641,19 @@ begin
                   -- W_GAP4B) y es el seguro contra quedarse escribiendo mas de una vuelta si
                   -- algo se atascara. Va FUERA del bloque de arriba porque ahi solo se mira
                   -- una vez cada 2048 ciclos.
-                  if idx_seen = '1' then
+                   if idx_seen = '1' and wg_age = C_IDX_BLIND then
                      idx_seen <= '0';
                      wgate_r  <= '1';
                      state    <= W_DONE;
+                   elsif idx_seen = '1' and wgate_r = '0' then
+                      -- M4040: el contador solo cuenta con la PUERTA ABIERTA. Antes corria
+                      -- tambien con la puerta cerrada -W_DONE y W_REFUSED caen dentro de este
+                      -- mismo 'when others', donde wg_age vale 0- asi que sumaba los indices
+                      -- normales de entre pistas y no separaba las dos causas.
+                      -- M4039: indice DENTRO de la ventana ciega. Se descarta y se cuenta: esto
+                      -- es lo que antes mataba la pista a los microsegundos de empezarla.
+                      idx_seen  <= '0';
+                      if blind_cnt /= x"FFFF" then blind_cnt <= blind_cnt + 1; end if;
                   end if;
 
             end case;

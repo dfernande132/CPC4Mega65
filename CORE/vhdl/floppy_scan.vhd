@@ -60,6 +60,11 @@ entity floppy_scan is
       --               un paso de preparacion por pista.
       --   trk_last_i  ultima pista del recorrido. Un .dsk de CPC puede tener 42 pistas, no 40.
       fmt_hold_i     : in  std_logic := '0';
+      -- M4035: '1' = en esta pista no hay nada que escribir. La cabeza se coloca igual (el
+      -- recorrido lineal es la parte validada) pero no se arranca el escritor, asi que WGATE
+      -- no se abre. Es lo que permite reescribir SOLO las pistas sucias sin tener que darle al
+      -- secuenciador una lista de pistas.
+      fmt_skip_i     : in  std_logic := '0';
       trk_last_i     : in  std_logic_vector(6 downto 0) := std_logic_vector(to_unsigned(G_TRACKS - 1, 7));
       mfm_done_i     : in  std_logic;
       mfm_count_i    : in  std_logic_vector(4 downto 0);
@@ -184,7 +189,9 @@ begin
                         -- M4034: en modo copia, el que copia necesita leer del buffer la
                         -- cabecera de pista ANTES de que se abra WGATE. Mientras la tiene
                         -- sujeta no se arranca: la cabeza ya esta colocada, no corre prisa.
-                        if fmt_hold_i = '0' then
+                        if fmt_skip_i = '1' then
+                           state      <= SC_EVAL;   -- M4035: pasar de largo, sin escribir
+                        elsif fmt_hold_i = '0' then
                            fmt_strt_r <= '1';      -- M4027: formatear ESTA pista
                            state      <= SC_FMT_ARM;
                         end if;
