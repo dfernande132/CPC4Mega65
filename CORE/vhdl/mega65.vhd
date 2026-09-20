@@ -280,15 +280,13 @@ constant C_MENU_FLOPPY_FMT     : natural := 14;
 constant C_MENU_FLOPPY_COPY    : natural := 15;   -- M4034: copiar la imagen al disquete
 constant C_MENU_FLOPPY_WB      : natural := 16;   -- M4035: reescribir pistas sucias, a mano
 constant C_MENU_FLOPPY_WBAUTO  : natural := 17;   -- M4035: ...y solo
-constant C_MENU_FLOPPY_DENS    : natural := 18;
-constant C_MENU_FLIP_JOYS      : natural := 23;
-constant C_MENU_DPLL           : natural := 19;
-constant C_MENU_HDMI_16_9_50   : natural := 28;
-constant C_MENU_HDMI_4_3_50    : natural := 29;
-constant C_MENU_HDMI_5_4_50    : natural := 30;
-constant C_MENU_CRT_EMULATION  : natural := 34;
-constant C_MENU_HDMI_ZOOM      : natural := 35;
-constant C_MENU_IMPROVE_AUDIO  : natural := 36;
+constant C_MENU_FLIP_JOYS      : natural := 21;
+constant C_MENU_HDMI_16_9_50   : natural := 26;
+constant C_MENU_HDMI_4_3_50    : natural := 27;
+constant C_MENU_HDMI_5_4_50    : natural := 28;
+constant C_MENU_CRT_EMULATION  : natural := 32;
+constant C_MENU_HDMI_ZOOM      : natural := 33;
+constant C_MENU_IMPROVE_AUDIO  : natural := 34;
 
 ---------------------------------------------------------------------------------------------
 -- CPC4MEGA65 M1A: senales QNICE para las dos ROMs de arranque (ver main.vhd)
@@ -785,7 +783,12 @@ begin
    main_floppy_tgt_b <= main_osm_control_i(C_MENU_FLOPPY_B);
 
    -- M4023: eleccion de separador de datos
-   main_dpll_en <= main_osm_control_i(C_MENU_DPLL);
+   -- M4041: el separador DPLL sale del menu. Se anadio en M4023 para probar que los fallos de
+   -- la pista 7 fueran desplazamiento de pico, y la hipotesis quedo FALSADA con medida: el DPLL
+   -- corrio de verdad (65.535 celdas encendido, 0 apagado) y dio resultados identicos hasta el
+   -- ultimo contador. El RTL se queda en floppy_mfm.vhd -la sintesis lo elimina sola al estar
+   -- el enable constante- por si alguna mecanica rara lo necesitase alguna vez.
+   main_dpll_en <= '0';
    floppy_we_a       <= main_floppy_buf_we and not main_floppy_tgt_b;
    floppy_we_b       <= main_floppy_buf_we and     main_floppy_tgt_b;
 
@@ -898,7 +901,12 @@ begin
    main_floppy_fmt_en <= (main_osm_control_i(C_MENU_FLOPPY_FMT) or main_floppy_copy_en or
                           main_floppy_wb_active) and
                          not main_osm_control_i(C_MENU_FLOPPY_OFF);
-   main_floppy_density <= not main_osm_control_i(C_MENU_FLOPPY_DENS);
+   -- M4041: el interruptor de polaridad de DENSEL sale del menu. Probado en hardware: los dos
+   -- formateos, con y sin invertir, los lee el CPC real. A ESTA mecanica la linea le es
+   -- indiferente. OJO con lo que eso demuestra: que es inerte AQUI, no en cualquier unidad; en
+   -- otras puede afectar a la corriente de escritura. Se deja la polaridad que funciona, y el
+   -- 'VERIFICAR' de M4001 se cierra como 'irrelevante aqui, desconocido en general'.
+   main_floppy_density <= '1';
    main_floppy_enable <= (main_osm_control_i(C_MENU_FLOPPY_TEST) and
                           not main_osm_control_i(C_MENU_FLOPPY_OFF)) or main_floppy_fmt_en;
 

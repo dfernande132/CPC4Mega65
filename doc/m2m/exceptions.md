@@ -281,6 +281,54 @@ upstream (search for `3 * VDNUM` near an `xpm_cdc_array_single` generic map); if
 already there, drop this exception and remove the `generate` wrapper we added. If not, keep
 the guard.
 
+
+### `M2M/rom/shell.asm`: `FLUSH_CACHE` no mata el core cuando la unidad no tiene fichero (Milestone 4, 2026-09-20)
+
+Etiqueta en el codigo: `M2M-EXCEPTION flush-no-file`.
+
+**El fallo del framework.** `FLUSH_CACHE` comprobaba el manejador de fichero asi:
+
+    MOVE    HNDL_VD_FILES, R1
+    ADD     R0, R1
+    MOVE    @R1, R1                 ; R1: image-file handle
+    ...
+    CMP     0, R1
+    RBRA    _FC_PREP, !Z
+    MOVE    ERR_FATAL_FZERO, R8
+    RBRA    FATAL, 1
+
+Pero `HNDL_VD_FILES` es un array de **punteros a bloques `FAT32$FDH_STRUCT_SIZE`
+reservados estaticamente** (`shell_vars.asm`), y `VD_INIT` los inicializa por **doble
+indireccion** (`vdrives.asm:23-28`): lo que pone a cero es el primer campo de la
+estructura, `FDH_DEVICE`, no el puntero.
+
+O sea que `R1` **nunca vale cero** y esa guarda no puede dispararse jamas. Es codigo
+muerto. Con la unidad sin montar, `f32_fseek` se lanza sobre un manejador que nunca se
+abrio, con el numero de cluster a 0, y el Shell muere con `ERR_FATAL_SEEK` y el codigo
+`0xEE17` = `FAT32$ERR_ILLEGAL_CLUS`.
+
+**Como nos aparecio.** Desde M4031 se puede leer un disquete fisico **sin montar ninguna
+imagen**: el core llena el buffer de montaje directamente. Si despues el CPC escribe algo,
+`HANDLE_DRV_WR` lo sirve sin problema (no usa manejador) y marca la cache sucia; dos
+segundos despues `FLUSH_CACHE` intenta volcarla a un fichero que no existe y tumba la
+maquina. Le paso al usuario con un `SAVE"HOLA.BAS"`.
+
+**El arreglo.** Comprobar `@R1` (el campo `FDH_DEVICE`) en vez de `R1`, y si no hay fichero
+abierto **saltarse el volcado** en vez de provocar un error fatal: se salta a `_FC_DONE`,
+que marca la cache como limpia y vuelve por la salida normal. Marcarla limpia es necesario;
+si no, el Shell reintentaria el volcado indefinidamente.
+
+**Por que no es fatal.** Que la cache se ensucie sin fichero detras es una situacion
+legitima en cuanto el core puede llenar el buffer por su cuenta. La respuesta correcta es
+no volcar nada, no matar la maquina.
+
+**Alcance.** Afecta a CUALQUIER core de M2M cuyo lado del core pueda ensuciar la cache de
+una unidad virtual sin imagen montada. Pendiente de reportar aguas arriba junto con el
+`ROSM_SAVE` (ese ya arreglado por sy2002 en `bcb34f4`, traido a nuestro arbol y verificado
+identico byte a byte al de arriba).
+
+**Al actualizar desde un M2M mas nuevo**: comprobar si la guarda ya mira `@R1`. Si es asi,
+quitar esta excepcion.
 QNICE
 -----
 

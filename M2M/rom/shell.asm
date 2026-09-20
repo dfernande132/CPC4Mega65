@@ -1205,12 +1205,31 @@ FLUSH_CACHE     SYSCALL(enter, 1)
 
                 ; Prepare the flushing process
 
-                ; check for valid file handle
-                CMP     0, R1
-                RBRA    _FC_PREP, !Z
-                MOVE    ERR_FATAL_FZERO, R8
-                XOR     R9, R9
-                RBRA    FATAL, 1
+                ; M2M-EXCEPTION flush-no-file (CPC4MEGA65, ver doc/m2m/exceptions.md)
+                ;
+                ; Comprobar que el fichero esta ABIERTO, y si no lo esta saltarse el
+                ; volcado en vez de matar el core.
+                ;
+                ; HNDL_VD_FILES guarda PUNTEROS a bloques reservados estaticamente
+                ; (shell_vars.asm), asi que R1 nunca vale cero y la guarda original
+                ; -CMP 0, R1- no podia dispararse jamas: era codigo muerto. Lo que
+                ; distingue una unidad sin montar es FDH_DEVICE, que VD_INIT pone a
+                ; cero mediante doble indireccion (vdrives.asm:23-28).
+                ;
+                ; Sin esto, f32_fseek se lanzaba sobre un manejador nunca abierto,
+                ; con el cluster a 0, y el Shell moria con ERR_FATAL_SEEK y el codigo
+                ; 0xEE17 = FAT32$ERR_ILLEGAL_CLUS.
+                ;
+                ; Y no es una condicion fatal: desde M4031 el core puede llenar la
+                ; cache leyendo un disquete FISICO sin ninguna imagen montada, y
+                ; entonces sencillamente no hay fichero al que volcar. Se marca la
+                ; cache como limpia -si no, el Shell lo reintentaria para siempre- y
+                ; se sale por la salida normal.
+                MOVE    R1, R8
+                ADD     FAT32$FDH_DEVICE, R8
+                CMP     0, @R8                  ; fichero abierto?
+                RBRA    _FC_PREP, !Z            ; si: volcar
+                RBRA    _FC_DONE, 1             ; no: marcar limpia y salir
 
                 ; the size of the image file is equal to the size of the
                 ; RAM cache: determine size and store as counter that
