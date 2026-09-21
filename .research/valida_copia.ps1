@@ -4,7 +4,7 @@
 param([Parameter(Mandatory=$true)][string[]]$dsk)
 
 $MAXTRK = 45
-$MAXSEC = 9
+$MAXSEC = 16   # M4057: el core subio G_MAXSEC a 16. Este fichero DEBE seguirlo o deja de espejar.
 $BUFSZ  = 262144
 
 foreach ($path in $dsk) {
@@ -25,7 +25,14 @@ foreach ($path in $dsk) {
    }
 
    $off = 256
-   $tsize = $b[0x32] -bor ($b[0x33] -shl 8)
+   # OJO: NADA de "-bor ($b[0x33] -shl 8)". En PowerShell los operadores de bits devuelven el
+   # tipo del operando IZQUIERDO, y $b[x] es un [byte]: el desplazamiento satura a 8 bits y da
+   # CERO. Con tsize=0 el bucle no avanzaba y validaba la pista 0 cuarenta veces, o sea que los
+   # "OK" de los 7 .dsk estandar de la coleccion no comprobaban nada.
+   #
+   # Es EL MISMO fallo que costo cinco builds en decode_tlm.ps1. Alli se arreglo con castings
+   # explicitos y una autocomprobacion, y no se miro el script hermano de la misma carpeta.
+   $tsize = [int]$b[0x32] + 256 * [int]$b[0x33]
    $secs = @()
    $skip = @()
    if ($err -eq 0) {

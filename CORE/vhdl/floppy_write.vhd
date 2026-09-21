@@ -92,6 +92,17 @@ entity floppy_write is
       src_id_r_i     : in  std_logic_vector(7 downto 0) := (others => '0');
       src_id_n_i     : in  std_logic_vector(7 downto 0) := (others => '0');
       src_data_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      -- CPC4MEGA65 M4057: el formato DATA deja de estar clavado en constantes.
+      --
+      -- src_gap3_i  el hueco entre sectores que pide la pista de origen. Era C_GAP3 = 78 fijo,
+      --             que es el del formato DATA. Un disco de 10 sectores usa 51 porque si no NO
+      --             CABE en una vuelta.
+      -- src_noiam_i '1' = escribir la pista SIN marca de indice, o sea sin los 146 bytes de
+      --             preambulo (GAP4A + sync + IAM + GAP1). Quien lo decide es floppy_copy,
+      --             calculando el presupuesto de la pista: si con preambulo no cabe, se quita.
+      --             No es un capricho: asi estan escritos esos discos de verdad.
+      src_gap3_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      src_noiam_i    : in  std_logic := '0';
       src_sec_o      : out std_logic_vector(3 downto 0);   -- sector en curso: elige el ID
       src_off_o      : out std_logic_vector(9 downto 0);   -- byte dentro del sector, 0..511
 
@@ -198,7 +209,8 @@ architecture beh of floppy_write is
    constant C_SYNC  : natural := 12;
    constant C_GAP1  : natural := 50;
    constant C_GAP2  : natural := 22;
-   constant C_GAP3  : natural := 78;
+   constant C_GAP3  : natural := 78;    -- M4057: solo el POR DEFECTO, ver gap3_v
+   signal   gap3_v  : natural range 1 to 256 := C_GAP3;
    constant C_SECSZ : natural := 512;
 
    type t_state is (W_IDLE, W_WAIT_IDX, W_GAP4A, W_SYNC1, W_IAM_A, W_IAM_M, W_GAP1,
@@ -308,6 +320,11 @@ begin
    assert C_IDX_BLIND > 0
       report "C_IDX_BLIND degenerado: la ventana ciega del indice no existiria"
       severity failure;
+
+   -- M4057: en modo origen manda el hueco de la pista de origen; formateando normal, el del
+   -- formato DATA de siempre. El rango arranca en 1 porque el estado hace 'gap3_v - 1'.
+   gap3_v <= to_integer(unsigned(src_gap3_i)) when (src_en_i = '1' and src_gap3_i /= x"00")
+             else C_GAP3;
 
    f_wgate_o <= wgate_r;
    f_wdata_o <= wdata_r;
@@ -516,9 +533,17 @@ begin
                   if idx_seen = '1' then
                      idx_seen <= '0';
                      wgate_r  <= '0';        -- AQUI empieza a escribirse de verdad
-                     cnt      <= C_GAP4A - 1;
-                     sec_idx  <= 0;
-                     state    <= W_GAP4A;
+                      sec_idx  <= 0;
+                      -- M4057: sin marca de indice se entra directo al sincronismo del primer
+                      -- sector y se ahorran los 146 bytes del preambulo. Es lo que hace que una
+                      -- pista de 10 sectores quepa en la vuelta.
+                      if src_en_i = '1' and src_noiam_i = '1' then
+                         cnt   <= C_SYNC - 1;
+                         state <= W_SSYNC;
+                      else
+                         cnt   <= C_GAP4A - 1;
+                         state <= W_GAP4A;
+                      end if;
                   elsif noidx_tmr = 0 then
                      -- M4052: cinco vueltas sin ver el indice. No hay disquete, o no gira.
                      if noidx_cnt /= x"FF" then
@@ -670,7 +695,7 @@ begin
                         when W_DAT_CRC =>
                            load_val <= crc(15 downto 8); load_req <= '1';
                            crc <= crc(7 downto 0) & x"00";
-                           if cnt = 0 then cnt <= C_GAP3 - 1; state <= W_GAP3;
+                           if cnt = 0 then cnt <= gap3_v - 1; state <= W_GAP3;
                            else cnt <= cnt - 1; end if;
 
                         when W_GAP3 =>
@@ -679,7 +704,7 @@ begin
                               if (src_en_i = '0' and sec_idx = G_SECTORS - 1) or
                                  (src_en_i = '1' and unsigned(src_nsec_i) /= 0 and
                                   sec_idx + 1 >= unsigned(src_nsec_i)) or
-                                 (src_en_i = '1' and sec_idx = G_SECTORS - 1) then
+                               (src_en_i = '1' and sec_idx = 15) then   -- M4057: hasta 16
                                  state <= W_GAP4B;
                               else
                                  sec_idx <= sec_idx + 1;

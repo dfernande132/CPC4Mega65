@@ -59,7 +59,10 @@ entity floppy_copy is
       -- del MEGA65 es un mecanismo de PC de 80 pistas: llegar ahi no es ningun problema. El
       -- 42 de la primera version era un limite inventado, no una restriccion real.
       G_MAXTRK    : natural := 45;         -- pistas que aceptamos como mucho
-      G_MAXSEC    : natural := 9;          -- sectores por pista que caben en una vuelta
+      -- M4057: 16, no 9. Nueve es el formato DATA; hay discos reales de 10 sectores -el
+      -- formato Ocean de 200 KB- y alguna proteccion llega a 16. w_sec_i es de 4 bits, o sea
+      -- que 16 es justo el techo que admite el interfaz con el escritor.
+      G_MAXSEC    : natural := 16;         -- sectores por pista que caben en una vuelta
       G_BUFSZ     : natural := 262144      -- tamano del buffer de montaje, 256 KB
    );
    port (
@@ -106,6 +109,8 @@ entity floppy_copy is
       w_id_h_o       : out std_logic_vector(7 downto 0);
       w_id_r_o       : out std_logic_vector(7 downto 0);
       w_id_n_o       : out std_logic_vector(7 downto 0);
+      w_gap3_o       : out std_logic_vector(7 downto 0);   -- M4057
+      w_noiam_o      : out std_logic;
       w_data_o       : out std_logic_vector(7 downto 0);
 
       -- Resultado
@@ -138,6 +143,7 @@ architecture beh of floppy_copy is
    -- Desplazamientos dentro de la cabecera de pista
    constant C_T_SIDE   : natural := 16#11#;
    constant C_T_NSEC   : natural := 16#15#;
+   constant C_T_GAP3   : natural := 16#16#;   -- M4057: GAP#3 length del TrackInfo
    constant C_T_LIST   : natural := 16#18#;   -- 8 bytes por sector: C H R N ST1 ST2 len_lo len_hi
 
    constant C_SECSZ    : natural := 512;
@@ -147,7 +153,7 @@ architecture beh of floppy_copy is
       CP_RD,                                             -- lector de un byte del buffer
       CP_SIG, CP_TRACKS, CP_SIDES, CP_TSZ_LO, CP_TSZ_HI, -- cabecera de disco
       CP_V_TSZ, CP_V_SIDE, CP_V_NSEC, CP_V_SEC_H, CP_V_SEC_N, CP_V_NEXT,  -- validacion
-      CP_ARM, CP_P_NSEC, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_NEXT, CP_FEED, CP_SKIP,
+      CP_ARM, CP_P_NSEC, CP_P_GAP3, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_NEXT, CP_FEED, CP_SKIP,
       CP_DONE, CP_REFUSED);
 
    signal state    : t_state := CP_IDLE;
@@ -225,6 +231,24 @@ architecture beh of floppy_copy is
    signal feed_addr : unsigned(17 downto 0);
    signal sec_ix    : integer range 0 to G_MAXSEC - 1;
 
+   -- CPC4MEGA65 M4057: PRESUPUESTO DE PISTA.
+   --
+   -- Una vuelta a 250 kbps y 300 RPM son 6250 bytes. Cada sector cuesta 62 + datos + GAP3, y el
+   -- preambulo con marca de indice (GAP4A + sync + IAM + GAP1) son 146 mas.
+   --
+   --   9 sectores, GAP3=78  ->  146 + 9*(574+78)  = 6014   cabe, con 236 de margen
+   --  10 sectores, GAP3=51  ->  146 + 10*(574+51) = 6396   NO cabe... y sin preambulo da 6250
+   --                                                       CLAVADOS. No es casualidad: esos
+   --                                                       discos no llevan marca de indice.
+   --
+   -- De ahi que la decision de escribir sin IAM no sea una opcion del usuario sino el resultado
+   -- de esta cuenta, hecha pista a pista con el GAP3 que dice la imagen de origen.
+   constant C_TRK_BYTES : natural := 6250;   -- una vuelta DD
+   constant C_PREAMBLE  : natural := 146;    -- GAP4A + sync + IAM + GAP1
+   constant C_SEC_OVH   : natural := 62;     -- todo lo del sector menos datos y GAP3
+   signal p_gap3  : unsigned(7 downto 0) := to_unsigned(78, 8);
+   signal p_noiam : std_logic := '0';
+
 begin
 
    -- El indice llega del escritor en 4 bits y el array tiene 9 entradas: se acota aqui una sola
@@ -249,6 +273,8 @@ begin
    w_id_h_o   <= id_h(sec_ix);
    w_id_r_o   <= id_r(sec_ix);
    w_id_n_o   <= id_n(sec_ix);
+   w_gap3_o   <= std_logic_vector(p_gap3);    -- M4057
+   w_noiam_o  <= p_noiam;
 
    -- hold_o es un NIVEL, no un evento: "esta pista todavia no esta preparada". Asi no hay
    -- carrera posible con el instante en que floppy_scan cambia de pista, y un fallo de
@@ -290,6 +316,7 @@ begin
 
    main_proc : process (clk_i)
       variable nxt_off : unsigned(18 downto 0);
+      variable g_v     : natural range 0 to 255;   -- M4057
    begin
       if rising_edge(clk_i) then
          en_d   <= enable_i;
@@ -509,6 +536,24 @@ begin
                when CP_P_NSEC =>
                   p_nsec  <= unsigned(rd_data(4 downto 0));
                   p_sec   <= 0;
+                  addr_r  <= t_off + to_unsigned(C_T_GAP3, 18);   -- M4057
+                  rd_wait <= 2; ret <= CP_P_GAP3; state <= CP_RD;
+
+               -- M4057: el hueco entre sectores de la pista de origen, y con el la decision de
+               -- escribir con marca de indice o sin ella.
+               when CP_P_GAP3 =>
+                  if unsigned(rd_data) = 0 then
+                     g_v := 78;              -- imagen sin GAP3 declarado: el del formato DATA
+                  else
+                     g_v := to_integer(unsigned(rd_data));
+                  end if;
+                  p_gap3 <= to_unsigned(g_v, 8);
+                  if C_PREAMBLE + to_integer(p_nsec) * (C_SEC_OVH + C_SECSZ + g_v) >
+                     C_TRK_BYTES then
+                     p_noiam <= '1';
+                  else
+                     p_noiam <= '0';
+                  end if;
                   addr_r  <= t_off + to_unsigned(C_T_LIST, 18);
                   rd_wait <= 2; ret <= CP_P_C; state <= CP_RD;
 

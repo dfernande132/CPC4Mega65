@@ -255,6 +255,33 @@ architecture beh of floppy_mfm is
    -- en PC los sectores son 1..9 y en el CPC son &C1..&C9 (193..201), cuyos 5 bits bajos son
    -- tambien 1..9.
    signal seen_map   : std_logic_vector(31 downto 0) := (others => '0');
+
+   -- CPC4MEGA65 M4057: LA RANURA SALE DEL ORDEN DE APARICION, NO DEL IDENTIFICADOR.
+   --
+   -- Antes era 'R(3..0) - 1', o sea la convencion DATA del CPC (&C1..&C9 -> 0..8) metida
+   -- dentro del separador. Eso deja fuera cualquier disco que no numere asi:
+   --   * R-Type Face A tiene diez sectores, &C1..&CA: el decimo cae en la ranura 9 y
+   --     floppy_dsk lo descarta, porque su lista es de G_SECTORS = 9 entradas.
+   --   * Ocean Dynamite 4 numera R = 0x00..0x0F: el sector R=0 da ranura -1, que envuelve a 31.
+   --
+   -- Lo correcto en general es el orden en que los sectores aparecen en la pista, que ademas
+   -- es como los ordena un .dsk de verdad: la lista del TrackInfo va en orden FISICO. Nuestras
+   -- imagenes pasan a parecerse mas a las reales, no menos.
+   --
+   -- LA RANURA TIENE QUE SER ESTABLE ENTRE VUELTAS. Un sector cuyo CRC de datos falle no entra
+   -- en seen_map y se reintenta en la vuelta siguiente: si entonces le tocara otra ranura,
+   -- escribiria encima de otro sector. Por eso se guarda la asignacion en una tabla y se
+   -- reutiliza, y por eso hace falta slot_set aparte de seen_map: 'ya tiene ranura' no es lo
+   -- mismo que 'ya se leyo entero'.
+   --
+   -- La tabla se indexa con los 5 bits bajos de R, igual que seen_map, asi que hereda su misma
+   -- limitacion: dos sectores cuyos R solo difieran por encima del bit 4 colisionarian. No pasa
+   -- en ningun formato conocido del CPC (&C1..&CF, y 0x00..0x0F en el caso raro de Dynamite).
+   type t_slottab is array (0 to 31) of unsigned(4 downto 0);
+   signal slot_tab  : t_slottab := (others => (others => '0'));
+   signal slot_set  : std_logic_vector(31 downto 0) := (others => '0');
+   signal next_slot : unsigned(4 downto 0) := (others => '0');
+   signal cur_slot  : unsigned(4 downto 0) := (others => '0');
    signal sect_cnt   : unsigned(4 downto 0) := (others => '0');
    signal rev_cnt    : natural range 0 to 7 := 0;
    -- Se ha encontrado algun sector NUEVO en la vuelta actual? Si no, no hace falta seguir.
@@ -332,8 +359,8 @@ begin
    tlm_pllcells_o <= std_logic_vector(pll_cells);   -- M4024
    tlm_runts_o    <= std_logic_vector(runt_cnt);    -- M4025
    data_offset_o <= std_logic_vector(data_off_r);
-   -- Ranura = los 4 bits bajos del identificador menos 1 (sectores 1..9 -> ranuras 0..8)
-   sec_slot_o    <= std_logic_vector(resize(unsigned(id_r_lat(3 downto 0)) - 1, 5));
+   -- M4057: ranura = orden de aparicion en la pista. Ver la declaracion de slot_tab.
+   sec_slot_o    <= std_logic_vector(cur_slot);
    sec_ok_o      <= sec_ok_r;
    id_track_o     <= id_c;
    id_side_o      <= id_h;
@@ -510,6 +537,9 @@ begin
          if rst_i = '1' or enable_i = '0' then
             state      <= ST_IDLE;
             seen_map   <= (others => '0');
+            slot_set   <= (others => '0');   -- M4057
+            next_slot  <= (others => '0');
+            cur_slot   <= (others => '0');
             sect_cnt   <= (others => '0');
             rev_cnt    <= 0;
             done_r     <= '0';
@@ -524,6 +554,9 @@ begin
          elsif restart_i = '1' then
             state      <= ST_IDLE;
             seen_map   <= (others => '0');
+            slot_set   <= (others => '0');   -- M4057
+            next_slot  <= (others => '0');
+            cur_slot   <= (others => '0');
             sect_cnt   <= (others => '0');
             rev_cnt    <= 0;
             done_r     <= '0';
@@ -660,6 +693,17 @@ begin
                      if f_crc16(crc, byte_v) = x"0000" then
                         id_ok    <= '1';
                         id_r_lat <= id_r;
+                        -- M4057: primera vez que se ve este R en la pista -> ranura nueva.
+                        if slot_set(to_integer(unsigned(id_r(4 downto 0)))) = '0' then
+                           slot_set(to_integer(unsigned(id_r(4 downto 0)))) <= '1';
+                           slot_tab(to_integer(unsigned(id_r(4 downto 0)))) <= next_slot;
+                           cur_slot <= next_slot;
+                           if next_slot /= "11111" then
+                              next_slot <= next_slot + 1;
+                           end if;
+                        else
+                           cur_slot <= slot_tab(to_integer(unsigned(id_r(4 downto 0))));
+                        end if;
                      elsif idcrc_err /= x"FFFF" then
                         idcrc_err <= idcrc_err + 1;     -- M4019
                      end if;
