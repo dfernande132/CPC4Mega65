@@ -122,6 +122,7 @@ constant C_DEV_CPC_ROM_AMSDOS    : std_logic_vector(15 downto 0) := x"0105";  --
 constant C_DEV_CPC_VDRIVES       : std_logic_vector(15 downto 0) := x"0102";  -- vdrives.vhd (gestion de unidades)
 constant C_DEV_CPC_MOUNT_A       : std_logic_vector(15 downto 0) := x"0103";  -- buffer de imagen de la unidad A:
 constant C_DEV_CPC_MOUNT_B       : std_logic_vector(15 downto 0) := x"0104";  -- buffer de imagen de la unidad B:
+   constant C_DEV_CPC_STATUS     : std_logic_vector(15 downto 0) := x"0106";  -- M4045: estado del core para el firmware
 
 ----------------------------------------------------------------------------------------------------------
 -- Virtual Drive Management System

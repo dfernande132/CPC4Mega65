@@ -27,6 +27,8 @@
 ; main.asm is the mandatory, so always include it
 ; It jumps to START_FIRMWARE (see below) after the QNICE "operating system"
 ; called "Monitor" has been included and initialized
+; M4045: indices de menu y device IDs, generados por make_rom.sh
+#include "osm_const.asm"
 #include "../../M2M/rom/main.asm"
 
 ; Only include the Shell, if you want to use the pre-build core automation
@@ -140,11 +142,249 @@ PREP_LOAD_IMAGE XOR     R8, R8                  ; no errors
 ; Output:
 ;   R8: 0=OK, else pointer to string with error message
 ;   R9: 0=OK, else error code
-PREP_START      INCRB
+; M4050: NINGUNA ACCION PUEDE RESUCITAR DESDE EL FICHERO DE AJUSTES.
+;
+; M2M guarda TODOS los bits del menu sin distinguir entre configuraciones y
+; acciones. Si el fichero se guarda con una accion marcada, el core la ejecuta al
+; arrancar sin que nadie toque nada.
+;
+; Con "Read disk now" eso ya se observo en hardware: el core leia el disquete nada
+; mas encender. Con "FORMAT WHOLE DISK !!" habria FORMATEADO el disquete que hubiera
+; dentro, y con "COPY" lo mismo. Un ajuste guardado no puede desencadenar una accion
+; destructiva.
+;
+; Las CONFIGURACIONES si se conservan a proposito: Internal floppy, Auto write-back
+; y lo demas son estados y tiene sentido recordarlos.
+PREP_START      SYSCALL(enter, 1)
+
+                MOVE    CPC_OSM_FLOPPY_TEST, R8
+                RSUB    CFM_CLEAR_BIT, 1
+                MOVE    CPC_OSM_FLOPPY_FMT, R8
+                RSUB    CFM_CLEAR_BIT, 1
+                MOVE    CPC_OSM_FLOPPY_COPY, R8
+                RSUB    CFM_CLEAR_BIT, 1
+                MOVE    CPC_OSM_FLOPPY_WB, R8
+                RSUB    CFM_CLEAR_BIT, 1
+                MOVE    CPC_OSM_FLOPPY_DUMP, R8
+                RSUB    CFM_CLEAR_BIT, 1
+
+                SYSCALL(leave, 1)
                 XOR     R8, R8
                 XOR     R9, R9
-                DECRB
                 RET
+
+; HANDLE_CORE_IO callback function:
+;
+; M2M-EXCEPTION core-io-hook. Llamada desde HANDLE_IO en CADA iteracion del bucle
+; principal del Shell y de todos sus bucles de espera bloqueantes (OSD, explorador
+; de ficheros, ayuda).
+;
+; QUE HACE AQUI: desmarcar solas las CINCO ACCIONES de la disquetera -Read disk
+; now, FORMAT, COPY, WRITE BACK y Dump telemetry- cuando la operacion termina. Los
+; bits del menu los escribe el Shell y el core solo los lee, asi que sin esto hay
+; que desmarcar a mano antes de poder volver a lanzar la misma accion.
+;
+; Las CONFIGURACIONES no se tocan: Auto write-back e Internal floppy son estados, y
+; desmarcarlas solas seria desconcertante. Dump telemetry estaba en esa lista por
+; error hasta M4052: sobrescribe el fichero montado, o sea que es una ACCION, y se
+; comportaba distinto de las otras cuatro sin ninguna razon.
+;
+; DOS RESTRICCIONES QUE MANDAN SOBRE EL DISENO
+;
+; 1. OPTM_SET provoca un FATAL si OPTM_RUN no esta activo, o sea si el menu no
+;    esta en pantalla (M2M/rom/menu.asm:1142). Y la operacion suele terminar con
+;    el menu CERRADO. Por eso el REPINTADO se APLAZA: se acumula en una mascara
+;    y se aplica en cuanto el menu vuelve a estar a la vista. El bit que ve el
+;    core, en cambio, se borra al instante (M4052): no pasa por OPTM_SET.
+;
+; 2. El estado del core llega como NIVELES, no pulsos (dispositivo 0x0106): bit 0
+;    lectura terminada, bit 1 formateo, bit 2 copia o reescritura, bit 3 rechazo,
+;    bit 4 volcado servido (M4052).
+;    El flanco se detecta aqui. Es mas robusto que mandar un pulso a traves de un
+;    cruce de dominios de reloj.
+;
+; CONTRATO: preservar todos los registros, volver RAPIDO -esto es multitarea
+; cooperativa dentro del bucle del Shell- y se puede cambiar la ventana RAMROM.
+; De ahi la ruta rapida: sin cambio de estado y sin nada pendiente, se sale sin
+; tocar nada, que es el caso comun con diferencia.
+;
+; Input: None
+; Output: None (todos los registros preservados)
+HANDLE_CORE_IO  SYSCALL(enter, 1)
+
+                ; --- leer el estado del core ---
+                MOVE    M2M$RAMROM_DEV, R0
+                MOVE    CPC_DEV_STATUS, @R0
+                MOVE    M2M$RAMROM_4KWIN, R0
+                MOVE    0, @R0
+                MOVE    M2M$RAMROM_DATA, R0
+                MOVE    @R0, R0                 ; R0: estado actual
+                AND     0x001F, R0              ; M4052: cinco bits
+
+                MOVE    CORE_IO_LAST, R1
+                MOVE    CORE_IO_PEND, R2
+
+                CMP     @R1, R0                 ; ha cambiado el estado?
+                RBRA    _HCIO_APPLY, Z          ; no: solo mirar lo pendiente
+
+                ; --- flancos de subida ---
+                ;
+                ; M4052: EL BIT QUE VE EL CORE SE BORRA AQUI MISMO; SOLO EL MENU SE APLAZA.
+                ;
+                ; Antes se aplazaban las dos cosas, y el motivo del aplazamiento -que OPTM_SET
+                ; provoca un FATAL con el menu cerrado- vale SOLO para el menu. CFM_CLEAR_BIT no
+                ; llama a OPTM_SET: escribe M2M$CFM_DATA a pelo, y eso se puede hacer siempre.
+                ;
+                ; El sintoma que quita: terminar una lectura con el menu cerrado y que la
+                ; disquetera siguiera girando hasta que el usuario volviera a abrirlo. El bit
+                ; seguia puesto, asi que para el core la operacion no habia terminado.
+                ;
+                ; El menu se reconstruye desde CFM_DATA al abrirlo -eso es lo que descubrio
+                ; M4047-, asi que al volver aparece ya desmarcada. El OPTM_SET aplazado hace
+                ; falta para el otro caso: el menu abierto MIENTRAS la operacion termina.
+                MOVE    @R1, R3                 ; R3: estado anterior
+                MOVE    R0, @R1                 ; recordar el nuevo
+                NOT     R3, R3
+                AND     R0, R3                  ; R3: bits que ACABAN de subir
+                RBRA    _HCIO_APPLY, Z          ; solo han bajado: nada nuevo
+
+                MOVE    R3, R4
+                AND     0x0001, R4              ; lectura terminada
+                RBRA    _HCIO_E1, Z
+                OR      0x0001, @R2
+                MOVE    CPC_OSM_FLOPPY_TEST, R8
+                RSUB    CFM_CLEAR_BIT, 1        ; parar el core YA
+_HCIO_E1        MOVE    R3, R4
+                AND     0x0002, R4              ; formateo terminado
+                RBRA    _HCIO_E2, Z
+                OR      0x0002, @R2
+                MOVE    CPC_OSM_FLOPPY_FMT, R8
+                RSUB    CFM_CLEAR_BIT, 1
+_HCIO_E2        MOVE    R3, R4
+                AND     0x000C, R4              ; copia/reescritura, hecha o rechazada
+                RBRA    _HCIO_E3, Z
+                OR      0x000C, @R2
+                MOVE    CPC_OSM_FLOPPY_COPY, R8
+                RSUB    CFM_CLEAR_BIT, 1
+                MOVE    CPC_OSM_FLOPPY_WB, R8
+                RSUB    CFM_CLEAR_BIT, 1
+_HCIO_E3        MOVE    R3, R4
+                AND     0x0010, R4              ; M4052: volcado servido
+                RBRA    _HCIO_APPLY, Z
+                OR      0x0010, @R2
+                MOVE    CPC_OSM_FLOPPY_DUMP, R8
+                RSUB    CFM_CLEAR_BIT, 1
+
+                ; --- aplicar lo pendiente, si el menu esta en pantalla ---
+_HCIO_APPLY     CMP     0, @R2                  ; hay algo pendiente?
+                RBRA    _HCIO_RET, Z
+
+                MOVE    M2M$CSR, R0
+                MOVE    @R0, R0
+                AND     M2M$CSR_OSM, R0        ; el menu esta a la vista?
+                RBRA    _HCIO_RET, Z            ; no: seguir esperando
+
+                ; OPTM_STRUCT distinto de cero = OPTM_RUN esta corriendo. NO vale
+                ; OPTM_MENULEVEL: ese es CERO en el menu principal y solo sube al entrar
+                ; en un submenu, asi que saltaba la aplicacion justo donde mas se nota.
+                ; Es la misma prueba que usa OPTM_LIVE_TEXT (menu.asm:1757).
+                MOVE    OPTM_STRUCT, R0
+                CMP     0, @R0
+                RBRA    _HCIO_RET, Z            ; no: OPTM_SET seria un FATAL
+
+                MOVE    @R2, R3                 ; R3: mascara pendiente
+
+                MOVE    R3, R4
+                AND     0x0001, R4
+                RBRA    _HCIO_A1, Z
+                MOVE    CPC_OSM_FLOPPY_TEST, R8
+                RSUB    _HCIO_CLEAR, 1
+_HCIO_A1        MOVE    R3, R4
+                AND     0x0002, R4
+                RBRA    _HCIO_A2, Z
+                MOVE    CPC_OSM_FLOPPY_FMT, R8
+                RSUB    _HCIO_CLEAR, 1
+_HCIO_A2        MOVE    R3, R4
+                AND     0x000C, R4
+                RBRA    _HCIO_A4, Z
+                MOVE    CPC_OSM_FLOPPY_COPY, R8
+                RSUB    _HCIO_CLEAR, 1
+                MOVE    CPC_OSM_FLOPPY_WB, R8
+                RSUB    _HCIO_CLEAR, 1
+_HCIO_A4        MOVE    R3, R4
+                AND     0x0010, R4              ; M4052
+                RBRA    _HCIO_A3, Z
+                MOVE    CPC_OSM_FLOPPY_DUMP, R8
+                RSUB    _HCIO_CLEAR, 1
+_HCIO_A3        MOVE    0, @R2                  ; ya esta aplicado
+
+_HCIO_RET       SYSCALL(leave, 1)
+                RET
+
+; Desmarca la linea de menu cuyo indice llega en R8.
+;
+; DOS PASOS, y el segundo es el que faltaba en M4045/M4046:
+;
+; 1. OPTM_SET actualiza el array de seleccion del menu y lo repinta. Es API del
+;    framework (M2M/rom/menu.asm).
+;
+; 2. Pero OPTM_SET **NO** propaga el cambio a M2M$CFM_DATA, que es el registro que
+;    ve el CORE. Quien lo hace normalmente es OPTM_CB_SEL (M2M/rom/options.asm,
+;    etiqueta _OPTMC_NOMNT_1), y solo se ejecuta cuando la seleccion viene de una
+;    tecla del usuario.
+;
+;    Sin este paso el sintoma era exactamente el observado en hardware: el menu se
+;    desmarcaba, el core SEGUIA viendo el bit puesto -la disquetera girando- y al
+;    salir y volver a entrar el menu se reconstruia desde CFM_DATA y la opcion
+;    aparecia marcada otra vez.
+;
+;    Aqui se borra el bit concreto en vez de volcar el array entero: el indice plano
+;    de la linea ES su numero de bit, con banco = indice/16 y bit = indice mod 16.
+;
+; Input: R8 = indice plano de la linea de menu
+_HCIO_CLEAR     SYSCALL(enter, 1)
+                MOVE    R8, R0                  ; R0: indice plano
+                XOR     R9, R9                  ; R9 = 0 = deseleccionar
+                RSUB    OPTM_SET, 1             ; 1) el menu
+                MOVE    R0, R8
+                RSUB    CFM_CLEAR_BIT, 1        ; 2) el registro que ve el core
+                SYSCALL(leave, 1)
+                RET
+
+; CFM_CLEAR_BIT: pone a cero UN bit de M2M$CFM_DATA, que es el registro que ve el
+; core. El indice plano de la linea de menu ES su numero de bit: banco = indice/16,
+; bit = indice mod 16.
+;
+; Se usa desde dos sitios y por dos motivos distintos:
+;   * _HCIO_CLEAR, porque OPTM_SET no propaga a CFM_DATA (ver alli).
+;   * PREP_START, para que NINGUNA accion pueda resucitar desde el fichero de ajustes.
+;
+; Input: R8 = indice plano de la linea de menu
+CFM_CLEAR_BIT   SYSCALL(enter, 1)
+
+                MOVE    R8, R1
+                AND     0x000F, R1              ; R1: numero de bit dentro del banco
+                MOVE    R8, R2
+                SHR     4, R2                   ; R2: banco = indice / 16
+
+                MOVE    M2M$CFM_ADDR, R3
+                MOVE    R2, @R3                 ; seleccionar el banco
+
+                MOVE    1, R4                   ; R4: mascara del bit
+_CFMC_SHIFT     CMP     0, R1
+                RBRA    _CFMC_MASK, Z
+                SHL     1, R4
+                SUB     1, R1
+                RBRA    _CFMC_SHIFT, 1
+
+_CFMC_MASK      NOT     R4, R4                  ; invertir para BORRAR
+                MOVE    M2M$CFM_DATA, R5
+                AND     R4, @R5
+
+                SYSCALL(leave, 1)
+                RET
+
+
 
 ; OSM_SEL_POST callback function:
 ;
@@ -226,6 +466,12 @@ END_OF_ROM      .DW 0
 ;
 ; add your own variables here
 ;
+; M4045: estado del core en la ultima llamada a HANDLE_CORE_IO, para detectar el
+; flanco; y mascara de acciones del menu pendientes de desmarcar, que se aplica
+; en cuanto el menu vuelve a estar en pantalla (OPTM_SET da FATAL si no lo esta).
+CORE_IO_LAST    .BLOCK 1
+CORE_IO_PEND    .BLOCK 1
+
 
 ; M2M Shell variables (only include, if you included "shell.asm" above)
 #include "../../M2M/rom/shell_vars.asm"

@@ -120,7 +120,7 @@ entity floppy_copy is
       --   4 una pista tiene 0 o mas de G_MAXSEC sectores
       --   5 un sector no es de 512 bytes (N distinto de 2)
       --   6 un sector dice que es de la cara 1
-      --   7 pista sin formatear en un EDSK
+      --   7 LIBRE desde M4051: las pistas sin formatear ya no se rechazan, se saltan
       --   8 la imagen no cabe en el buffer de montaje
       err_code_o     : out std_logic_vector(3 downto 0);
       tlm_trk_o      : out std_logic_vector(7 downto 0)   -- pistas preparadas para escribir
@@ -176,6 +176,17 @@ architecture beh of floppy_copy is
    type t_offtab is array (0 to G_MAXTRK - 1) of unsigned(17 downto 0);
    signal off_tab  : t_offtab := (others => (others => '0'));
 
+   -- M4051: que pistas del .dsk estan FORMATEADAS. En un EDSK una pista sin formatear se marca
+   -- con tamano 0 y no ocupa ni un byte. Antes se rechazaba la imagen entera; resulta que 12 de
+   -- los 26 .dsk de la coleccion del usuario las tienen -y algunos EN MEDIO, no solo al final-,
+   -- asi que rechazar dejaba la copia inservible para media coleccion.
+   --
+   -- Lo fiel es SALTARLAS: 'sin formatear' significa literalmente que ahi no hay nada, y no
+   -- escribir esa pista deja el disquete como estaba, que es exactamente lo que dice el origen.
+   signal trk_fmt  : std_logic_vector(G_MAXTRK - 1 downto 0) := (others => '0');
+   signal fmt_ix   : integer range 0 to G_MAXTRK - 1;
+   signal trk_unf  : std_logic;    -- la pista bajo la cabeza no esta formateada en el origen
+
    -- Identificadores de los sectores de la pista que se esta copiando AHORA
    type t_idarr is array (0 to G_MAXSEC - 1) of std_logic_vector(7 downto 0);
    signal id_c     : t_idarr := (others => (others => '0'));
@@ -193,6 +204,17 @@ architecture beh of floppy_copy is
    signal blk_cnt  : unsigned(7 downto 0) := (others => '0');
    signal wrote_r  : std_logic := '0';
    signal skip_r   : std_logic := '0';
+
+   -- M4052: el fin del recorrido se ENGANCHA en vez de mirarse en vivo.
+   --
+   -- 'scan_done_i = 1 y scan_d = 0' es una ventana de UN ciclo, y este modulo no siempre esta
+   -- mirando: pasa ratos en los estados que leen del buffer la cabecera de pista. Mientras el
+   -- recorrido solo podia terminar estando nosotros sujetando, la ventana no se podia perder.
+   -- Desde que floppy_scan puede cortar por su cuenta al no haber disquete (M4052), si. Y
+   -- perderla dejaba a este modulo sujetando para siempre.
+   --
+   -- Mismo arreglo, y mismo motivo, que el pestillo de la telemetria de M4049.
+   signal scan_end : std_logic := '0';
    signal cur_ix   : integer range 0 to 39;
    signal wb_todo  : std_logic;    -- hay que escribir la pista que hay bajo la cabeza
    signal wb_blk   : std_logic;    -- ...pero no se leyo entera
@@ -253,6 +275,13 @@ begin
 
    -- Decision por pista en modo reescritura, combinacional sobre los dos mapas medidos.
    cur_ix  <= to_integer(unsigned(track_i)) when unsigned(track_i) < 40 else 0;
+
+    -- M4051: track_i tiene 7 bits (0..127) y trk_fmt solo G_MAXTRK, asi que el indice hay que
+    -- recortarlo APARTE. No vale con protegerlo dentro de la condicion: VHDL no cortocircuita
+    -- el 'and' y evaluaria el indice de todas formas. Como ntracks <= G_MAXTRK esta validado
+    -- (rechazo 3), cuando track_i < ntracks el recorte no llega a actuar nunca.
+    fmt_ix  <= to_integer(unsigned(track_i)) when unsigned(track_i) < G_MAXTRK else 0;
+    trk_unf <= '1' when (unsigned(track_i) < ntracks and trk_fmt(fmt_ix) = '0') else '0';
    wb_in_r <= '1' when unsigned(track_i) < 40 else '0';
    wb_todo <= '1' when (mode_wb_i = '1' and wb_in_r = '1' and
                         dirty_i(cur_ix) = '1' and ok_i(cur_ix) = '1') else '0';
@@ -265,6 +294,9 @@ begin
       if rising_edge(clk_i) then
          en_d   <= enable_i;
          scan_d <= scan_done_i;
+         if scan_done_i = '1' and scan_d = '0' then
+            scan_end <= '1';                     -- M4052
+         end if;
          wrote_r <= '0';      -- M4035: pulso de un ciclo
 
          if rst_i = '1' then
@@ -273,6 +305,7 @@ begin
             trk_cnt <= (others => '0');
             p_ok    <= '0';
             ntracks <= (others => '0');
+            scan_end <= '0';                     -- M4052
          elsif enable_i = '0' then
             -- OJO: al desmarcar la opcion NO se borran err_r ni trk_cnt. Durante una copia
             -- floppy_dsk no corre, asi que el volcado de telemetria no se escribe y el motivo
@@ -282,6 +315,7 @@ begin
             state   <= CP_IDLE;
             p_ok    <= '0';
             ntracks <= (others => '0');
+            scan_end <= '0';                     -- M4052
          else
 
             case state is
@@ -358,6 +392,7 @@ begin
                   end if;
                   v_trk <= (others => '0');
                   v_off <= to_unsigned(256, 19);
+                   trk_fmt <= (others => '1');   -- M4051: un .dsk estandar no tiene huecos
                   if extended = '1' then
                      addr_r  <= to_unsigned(C_H_TTAB, 18);
                      rd_wait <= 2; ret <= CP_V_TSZ; state <= CP_RD;
@@ -368,12 +403,15 @@ begin
 
                -- ---- validacion pista a pista ----------------------------------------------
                -- En un EDSK cada pista puede medir distinto, y una pista SIN FORMATEAR se marca
-               -- con tamano 0. No se copia un disco asi: no sabriamos que escribir en esa pista
-               -- y dejariamos un hueco silencioso.
+               -- con tamano 0: no ocupa ni un byte del fichero y ahi literalmente no hay nada.
+               -- Se marca en trk_fmt y se SALTA al escribir (M4051).
                when CP_V_TSZ =>
                   if unsigned(rd_data) = 0 then
-                     err_r <= x"7"; state <= CP_REFUSED;
+                     trk_fmt(to_integer(v_trk)) <= '0';
+                     tsize <= (others => '0');      -- no ocupa ni un byte
+                     state <= CP_V_NEXT;            -- M4051: saltarla, no rechazar
                   else
+                     trk_fmt(to_integer(v_trk)) <= '1';
                      tsize   <= unsigned(rd_data) & x"00";
                      addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_SIDE, 18);
                      rd_wait <= 2; ret <= CP_V_SIDE; state <= CP_RD;
@@ -448,9 +486,9 @@ begin
                   -- salida nos quedariamos sujetando para siempre, con el motor girando y el LED
                   -- amarillo, porque la peticion automatica no se suelta mientras queden pistas
                   -- pendientes. No es un cuelgue, pero tampoco se sale solo.
-                  if scan_done_i = '1' and scan_d = '0' then
+                  if scan_end = '1' then
                      state <= CP_DONE;
-                  elsif mode_wb_i = '1' and wb_todo = '0' then
+                   elsif (mode_wb_i = '1' and wb_todo = '0') or trk_unf = '1' then
                      -- Nada que escribir en esta pista. Si es que esta sucia pero no se leyo
                      -- entera, se cuenta y su bit de sucio se queda: esos datos no han llegado
                      -- al disquete y hay que seguir diciendolo.
@@ -519,7 +557,7 @@ begin
                -- Pista preparada: hold_o cae, floppy_scan arranca el escritor y este va pidiendo
                -- bytes por w_sec_i/w_off_i. Aqui solo se vigila el cambio de pista y el final.
                when CP_FEED =>
-                  if scan_done_i = '1' and scan_d = '0' then
+                  if scan_end = '1' then
                      trk_cnt <= trk_cnt + 1;
                      state   <= CP_DONE;
                   elsif unsigned(track_i) /= p_trk then
@@ -532,7 +570,7 @@ begin
                -- WGATE no se abre, la cabeza solo se mueve.
                when CP_SKIP =>
                   skip_r <= '1';
-                  if scan_done_i = '1' and scan_d = '0' then
+                  if scan_end = '1' then
                      state <= CP_DONE;
                   elsif unsigned(track_i) /= p_trk then
                      skip_r <= '0';

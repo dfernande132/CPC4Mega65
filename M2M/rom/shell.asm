@@ -929,8 +929,30 @@ HANDLE_IO       SYSCALL(enter, 1)
                 MOVE    R1, @R0                 ; remember new status
                 MOVE    1, @R2                  ; set "changed" flag
 
+                ; M2M-EXCEPTION core-io-hook (CPC4MEGA65, ver doc/m2m/exceptions.md)
+                ;
+                ; HANDLE_CORE_IO es una llamada obligatoria al firmware del core -como
+                ; SUBMENU_SUMMARY o PREP_START- que le da una rodaja de tiempo en CADA
+                ; iteracion de HANDLE_IO: el bucle principal del Shell Y todos los bucles
+                ; de espera bloqueantes que lo consultan (OSD, explorador de ficheros,
+                ; pantallas de ayuda).
+                ;
+                ; Pensada para tareas de fondo del core que el framework no conoce. Aqui se
+                ; usa para DESMARCAR SOLAS las acciones del menu -Read, Format, Copy, Write
+                ; back- cuando la operacion termina: los bits del menu los escribe el Shell
+                ; y el core solo los lee, asi que sin un enganche periodico no hay forma.
+                ;
+                ; CONTRATO: preservar todos los registros (SYSCALL enter/leave), volver
+                ; RAPIDO -esto es multitarea cooperativa- y puede cambiar el dispositivo o
+                ; la ventana RAMROM activos, igual que hace el propio HANDLE_IO. Se llama
+                ; despues de la deteccion de cambio de tarjeta, asi que SD_CHANGED esta
+                ; fresco.
+                ;
+                ; Idea y contrato tomados de la excepcion core-io-hook de AExp.
+_HANDLE_IO_0    RSUB    HANDLE_CORE_IO, 1
+
                 ; Loop through all VDRIVES (if any) and check for requests
-_HANDLE_IO_0    XOR     R0, R0                  ; R0: number of virtual drive
+                XOR     R0, R0                  ; R0: number of virtual drive
                 MOVE    VDRIVES_NUM, R1
                 MOVE    @R1, R1                 ; R1: amount of vdrives
                 RBRA    _HANDLE_IO_RET, Z       ; skip, if no VDRIVES

@@ -268,6 +268,12 @@ architecture beh of floppy_mfm is
    -- Se suben de 3 a 5 tras ver que en un disquete real se perdian entradas de directorio.
    constant C_REVS : natural := 5;
 
+   -- M4052: un segundo sin ver NINGUN pulso de indice = no hay disquete (ver el uso, al final
+   -- de dec_proc). Son cinco vueltas a 300 RPM, y C_REVS vueltas de lectura legitima no lo
+   -- disparan porque el contador se rearma con cada indice.
+   constant C_NOIDX_TMO : natural := G_CLK_HZ;
+   signal   noidx_tmr   : natural range 0 to C_NOIDX_TMO := C_NOIDX_TMO;
+
    signal id_c, id_h, id_r, id_n : std_logic_vector(7 downto 0) := (others => '0');
 
    -- Lectura del campo de DATOS que sigue a cada campo de ID.
@@ -737,6 +743,35 @@ begin
                end case;
             end if;
 
+
+            -- CPC4MEGA65 M4052: SIN PULSOS DE INDICE, LA PISTA SE DA POR LEIDA Y VACIA.
+            --
+            -- Todo lo de arriba lo mueve index_i. Sin disquete dentro ese pulso no llega nunca,
+            -- asi que done_r no subia JAMAS y floppy_scan se quedaba en SC_READ para siempre:
+            -- motor girando, sin scan_done y por tanto sin el bit de estado que desde M4045
+            -- desmarca la opcion del menu. "Read disk now" con la unidad vacia era un cuelgue.
+            --
+            -- El contador se reinicia con CADA indice, no al empezar la pista: una lectura
+            -- legitima puede durar C_REVS vueltas -mas de un segundo- y medir desde el arranque
+            -- la cortaria por la mitad. Un segundo sin ver NINGUN indice son cinco vueltas: no
+            -- hay motor lento que se confunda con eso.
+            --
+            -- Se sale con lo que haya (normalmente cero sectores), que es la verdad, y floppy_scan
+            -- lo trata como una pista ilegible mas. Quien corta el recorrido entero es su propia
+            -- comprobacion de disk_in_i; esto es el seguro para que no se quede colgado dentro de
+            -- una pista si el disquete se saca a mitad.
+            if ready_i = '1' and done_r = '0' then
+               if index_i = '1' then
+                  noidx_tmr <= C_NOIDX_TMO - 1;
+               elsif noidx_tmr = 0 then
+                  done_r <= '1';
+                  state  <= ST_IDLE;
+               else
+                  noidx_tmr <= noidx_tmr - 1;
+               end if;
+            else
+               noidx_tmr <= C_NOIDX_TMO - 1;
+            end if;
          end if;
       end if;
    end process dec_proc;

@@ -123,7 +123,13 @@ entity floppy_write is
       -- vez de supuesto. Y tlm_blind_o cuenta los que la ventana ciega ha RECHAZADO, que es la
       -- prueba directa de que el arreglo esta actuando.
       tlm_idxwr_o    : out std_logic_vector(15 downto 0);
-      tlm_blind_o    : out std_logic_vector(15 downto 0)
+      tlm_blind_o    : out std_logic_vector(15 downto 0);
+
+      -- M4052: rechazos por NO VER EL INDICE, o sea por no haber disquete dentro. Van aparte de
+      -- tlm_refus_o porque ese cuenta los dos motivos y son diagnosticos opuestos: "protegido"
+      -- se arregla moviendo la pestana, "sin disquete" metiendo uno. Con los testers de por
+      -- medio, un rechazo sin causa es un informe que no sirve.
+      tlm_noidx_o    : out std_logic_vector(7 downto 0)
    );
 end floppy_write;
 
@@ -165,6 +171,28 @@ architecture beh of floppy_write is
    signal   wg_age      : natural range 0 to C_IDX_BLIND := 0;  -- ciclos con la puerta abierta
    signal   idxwr_cnt   : unsigned(15 downto 0) := (others => '0');
    signal   blind_cnt   : unsigned(15 downto 0) := (others => '0');
+
+   -- CPC4MEGA65 M4052: SIN DISQUETE DENTRO, LA ESCRITURA SE NIEGA EN VEZ DE ESPERAR.
+   --
+   -- W_WAIT_IDX espera un pulso de indice para arrancar la pista en el sitio bueno. Sin disquete
+   -- ese pulso NO LLEGA NUNCA: el motor gira, el plato no. Y no habia salida - ni por tiempo ni
+   -- por cancelacion. La cadena entera se quedaba parada: floppy_write en W_WAIT_IDX,
+   -- floppy_scan en SC_FMT esperando fmt_done, ningun scan_done, y por tanto tampoco el bit de
+   -- estado que desde M4045 desmarca la opcion del menu. Motor girando hasta que el usuario lo
+   -- desmarcase a mano, que es justo lo que el desmarcado automatico le ha ensenado a no hacer.
+   --
+   -- El recalibrado NO lo detecta: el sensor de pista 0 es mecanico y responde igual con la
+   -- unidad vacia, asi que phys_ready sube sin disquete. Y disk_in_o, que si lo sabe, solo se
+   -- usaba para el color del LED.
+   --
+   -- 1 s son cinco vueltas a 300 RPM: no puede confundirse con un motor lento.
+   --
+   -- Se sale por W_REFUSED, que es el camino que ya existe para "no se puede escribir" y que
+   -- floppy_scan ya sabe atender (SC_FMT_ARM/SC_FMT -> SC_DONE). O sea que el recorrido termina,
+   -- la opcion se desmarca sola y el LED destella, sin tocar nada mas.
+   constant C_NOIDX_TMO : natural := G_CLK_HZ;                  -- 1 s
+   signal   noidx_tmr   : natural range 0 to C_NOIDX_TMO := 0;
+   signal   noidx_cnt   : unsigned(7 downto 0) := (others => '0');
 
    constant C_GAP4A : natural := 80;
    constant C_SYNC  : natural := 12;
@@ -212,6 +240,22 @@ architecture beh of floppy_write is
    signal abort_cnt  : unsigned(7 downto 0)  := (others => '0');   -- M4038
    signal idxend_cnt : unsigned(7 downto 0)  := (others => '0');
    signal stop_st    : unsigned(7 downto 0)  := (others => '0');
+
+   -- CPC4MEGA65 M4054: EL RECHAZO SE ENGANCHA. DURABA DOS CICLOS.
+   --
+   -- refused_o salia de 'state = W_REFUSED', y de W_REFUSED se sale EN CUANTO start_i baja.
+   -- start_i es un PULSO de un ciclo que manda floppy_scan, asi que el rechazo vivia dos ciclos
+   -- y a los 30 ns ya no existia.
+   --
+   -- Bastaba mientras el unico que lo miraba era floppy_scan, que esta esperandolo en
+   -- SC_FMT_ARM ese mismo ciclo. Pero el LED lo mira MUCHO despues: el destello se dispara
+   -- cuando sube scan_done, varios ciclos mas tarde, y para entonces el rechazo ya se habia
+   -- evaporado. Resultado en hardware: formatear un disquete PROTEGIDO daba LED VERDE.
+   --
+   -- Se limpia al EMPEZAR la operacion siguiente, no al terminar esta: asi sobrevive a que
+   -- caiga enable_i, que es lo que pasa en cuanto el firmware desmarca la opcion del menu.
+   signal en_d2      : std_logic := '0';
+   signal refus_lat  : std_logic := '0';
    signal wg_run     : unsigned(31 downto 0) := (others => '0');
    signal wg_max     : unsigned(31 downto 0) := (others => '0');
    signal wgate_d    : std_logic := '1';
@@ -281,11 +325,13 @@ begin
    tlm_wgmax_o  <= std_logic_vector(wg_max);
    tlm_idxwr_o  <= std_logic_vector(idxwr_cnt);    -- M4039
    tlm_blind_o  <= std_logic_vector(blind_cnt);
+   tlm_noidx_o  <= std_logic_vector(noidx_cnt);    -- M4052
 
    stats_proc : process (clk_i)
    begin
       if rising_edge(clk_i) then
          state_d <= state;
+         en_d2   <= enable_i;                 -- M4054
          wdata_d <= wdata_r;
 
          if rst_i = '1' then
@@ -293,6 +339,7 @@ begin
             wdata_cnt  <= (others => '0');
             starts_cnt <= (others => '0');
             refus_cnt  <= (others => '0');
+            refus_lat  <= '0';                -- M4054
          else
             -- Un formateo nuevo empieza de cero
             if state_d = W_IDLE and state = W_WAIT_IDX then
@@ -301,6 +348,14 @@ begin
                if starts_cnt /= x"FF" then
                   starts_cnt <= starts_cnt + 1;
                end if;
+            end if;
+
+            -- M4054: pestillo del rechazo y borrado de wg_max al empezar una operacion nueva.
+            if enable_i = '1' and en_d2 = '0' then
+               refus_lat <= '0';
+               wg_max    <= (others => '0');
+            elsif state = W_REFUSED then
+               refus_lat <= '1';
             end if;
 
             if state_d /= W_REFUSED and state = W_REFUSED then
@@ -346,7 +401,7 @@ begin
    end process stats_proc;
    busy_o    <= '0' when (state = W_IDLE or state = W_DONE or state = W_REFUSED) else '1';
    done_o    <= '1' when state = W_DONE else '0';
-   refused_o <= '1' when state = W_REFUSED else '0';
+   refused_o <= '1' when (state = W_REFUSED or refus_lat = '1') else '0';   -- M4054
    wrote_full_o <= '1' when byte_cnt > 5000 else '0';
 
    -- M4034: el modulo dice en todo momento QUE byte necesita. El que copia solo tiene que
@@ -449,9 +504,10 @@ begin
                      if wprot_i = '1' then
                         state <= W_REFUSED;  -- la propia disquetera dice que no se puede
                      else
-                        idx_seen <= '0';     -- solo cuenta un indice a partir de AHORA
-                        byte_cnt <= (others => '0');
-                        state    <= W_WAIT_IDX;
+                        idx_seen  <= '0';     -- solo cuenta un indice a partir de AHORA
+                        byte_cnt  <= (others => '0');
+                        noidx_tmr <= C_NOIDX_TMO - 1;   -- M4052
+                        state     <= W_WAIT_IDX;
                      end if;
                   end if;
 
@@ -463,6 +519,14 @@ begin
                      cnt      <= C_GAP4A - 1;
                      sec_idx  <= 0;
                      state    <= W_GAP4A;
+                  elsif noidx_tmr = 0 then
+                     -- M4052: cinco vueltas sin ver el indice. No hay disquete, o no gira.
+                     if noidx_cnt /= x"FF" then
+                        noidx_cnt <= noidx_cnt + 1;
+                     end if;
+                     state <= W_REFUSED;
+                  else
+                     noidx_tmr <= noidx_tmr - 1;
                   end if;
 
                when others =>

@@ -87,6 +87,11 @@ entity main is
       -- dura un ciclo de 64MHz y no se veria.
       floppy_index_blink_o    : out std_logic;
       floppy_disk_in_o        : out std_logic;
+      -- M4052: '1' = el volcado de telemetria que se pidio ya esta servido. Es lo que le
+      -- faltaba a 'Dump telemetry' para desmarcarse sola como las otras cuatro acciones.
+      -- dump_done a secas no vale: se pone al PEDIRLO, no al servirlo.
+      floppy_dump_done_o      : out std_logic;
+      floppy_no_disk_o        : out std_logic;   -- M4053
       -- M4B: resultado de leer una vuelta de la pista 0
       floppy_mfm_done_o       : out std_logic;
       floppy_sector_count_o   : out std_logic_vector(4 downto 0);
@@ -516,6 +521,7 @@ signal scan_done_d        : std_logic := '0';
 signal tinfo_flush_r      : std_logic := '0';
 signal tlm_dly_cnt        : natural range 0 to C_TLM_DELAY := 0;
 signal scan_done_dly      : std_logic := '0';
+signal tlm_armed          : std_logic := '0';   -- M4049
 signal u765_dbg           : std_logic_vector(15 downto 0);
 
 -- M4030 EXPERIMENTO. Reproduce a proposito el escenario de M4014 -inyectar un montaje falso
@@ -663,6 +669,8 @@ signal fmt_stopst         : std_logic_vector(7 downto 0);
 signal fmt_wgmax          : std_logic_vector(31 downto 0);
 signal fmt_idxwr          : std_logic_vector(15 downto 0);   -- M4039
 signal fmt_blind          : std_logic_vector(15 downto 0);
+signal fmt_noidx          : std_logic_vector(7 downto 0);    -- M4052
+signal floppy_disk_in     : std_logic;                       -- M4052
 signal wb_active          : std_logic;
 signal wb_mode            : std_logic;
 signal wb_skip            : std_logic;
@@ -1175,6 +1183,19 @@ begin
    begin
       if rising_edge(clk_main_i) then
          tinfo_flush_r <= '0';            -- pulso de un ciclo
+
+         -- M4049: una lectura nueva limpia el pestillo. No vale limpiarlo cuando
+         -- floppy_scan_done cae, que es lo que hacia antes de forma implicita: desde M4045 el
+         -- firmware desmarca la opcion del menu en cuanto la operacion termina, con lo que cae
+         -- main_floppy_enable, floppy_scan se resetea, y los 3 s de espera no se cumplian
+         -- JAMAS. El bloque de telemetria dejo de escribirse por completo.
+         --
+         -- Mismo patron que se comio el destello del LED: automatizar la limpieza de un estado
+         -- rompe todo lo que dependia de que ese estado persistiera.
+         if floppy_dsk_start = '1' then
+            tlm_armed     <= '0';
+            scan_done_dly <= '0';
+         end if;
          scan_done_d   <= floppy_scan_done;
 
          -- Al terminar el recorrido: invalidar la cache, inyectar el montaje falso, y armar
@@ -1184,6 +1205,7 @@ begin
             remount       <= '1';         -- M4030: montaje falso (EXPERIMENTO)
             remount_cnt   <= C_REMOUNT_CYC;
             tlm_dly_cnt   <= C_TLM_DELAY;
+            tlm_armed     <= '1';         -- M4049: engancha el fin de recorrido
             scan_done_dly <= '0';
          else
             if remount_cnt /= 0 then
@@ -1194,7 +1216,7 @@ begin
 
             if tlm_dly_cnt /= 0 then
                tlm_dly_cnt <= tlm_dly_cnt - 1;
-            elsif floppy_scan_done = '1' then
+            elsif tlm_armed = '1' then
                scan_done_dly <= '1';      -- 3 s despues: ya se puede fotografiar
             else
                scan_done_dly <= '0';
@@ -1337,12 +1359,19 @@ begin
          if floppy_dump_en_i = '0' then
             dump_done <= '0';
          end if;
-         if floppy_dump_en_i = '1' and dump_scan_d = '0' and dump_done = '0'
-               and ((floppy_tgt_b_i = '0' and img_ever_mnt(0) = '1') or
-                    (floppy_tgt_b_i = '1' and img_ever_mnt(1) = '1')) then
-            dump_req  <= '1';
+         if floppy_dump_en_i = '1' and dump_scan_d = '0' and dump_done = '0' then
+            -- M4052: el pestillo se cierra SIEMPRE, se llegue a volcar o no.
+            --
+            -- Antes la guarda de "hay imagen montada" envolvia tambien a dump_done, asi que sin
+            -- imagen no pasaba NADA: ni volcado ni fin, y la opcion se quedaba marcada para
+            -- siempre. Ahora la operacion termina igual -no habia nada que hacer, que es una
+            -- forma legitima de terminar- y la opcion se desmarca sola como las otras cuatro.
             dump_done <= '1';
-            dump_tmo  <= C_DUMP_TMO;
+            if (floppy_tgt_b_i = '0' and img_ever_mnt(0) = '1') or
+               (floppy_tgt_b_i = '1' and img_ever_mnt(1) = '1') then
+               dump_req <= '1';
+               dump_tmo <= C_DUMP_TMO;
+            end if;
          elsif dump_req = '1' then
             if main_sd_ack = '1' then
                dump_req <= '0';                  -- atendida: soltar el nivel
@@ -1540,7 +1569,8 @@ begin
          ready_o          => floppy_ready,
          error_o          => floppy_error_o,
          index_pulse_o    => floppy_index_pulse,
-         disk_in_o        => floppy_disk_in_o,
+         disk_in_o        => floppy_disk_in,   -- M4052: hace falta AQUI dentro, y un
+                                              -- puerto de salida no se puede releer en VHDL-93
          write_prot_o     => floppy_wprot,
          track_o          => open,
 
@@ -1562,6 +1592,9 @@ begin
          f_diskchanged_i  => f_diskchanged_i,
          f_rdata_i        => f_rdata_i
       ); -- i_floppy_phys
+
+   floppy_disk_in_o <= floppy_disk_in;
+   floppy_dump_done_o <= dump_done and not dump_req;   -- M4052
 
    -- Conmutador para hacer visible el indice en el LED (ver el comentario del puerto)
    floppy_blink_proc : process (clk_main_i)
@@ -1796,7 +1829,17 @@ begin
    -- La sujecion solo existe en modo copia. En un formateo normal no hay cabecera que leer y
    -- floppy_scan tiene que arrancar el escritor en cuanto la cabeza este colocada.
    fmt_hold      <= copy_hold     when (floppy_copy_en_i or wb_active) = '1' else '0';
-   fmt_skip      <= wb_skip      when wb_active = '1' else '0';
+   -- M4051: el SALTO tambien existe en modo copia, no solo en reescritura.
+   --
+   -- Nacio en M4035 para el write-back ("esta pista no esta sucia, pasa de largo") y por eso se
+   -- dejo colgado de wb_active a secas. Al hacer que las pistas sin formatear se salten en vez de
+   -- rechazar la imagen, el salto adquirio un SEGUNDO motivo, y con la puerta cerrada floppy_scan
+   -- no lo veia nunca: se quedaba en SC_WAIT_READY esperando a que bajase fmt_hold, que en CP_SKIP
+   -- esta alto. CUELGUE con el motor girando, y sin salida, porque el bit de estado que desmarca
+   -- la opcion necesita scan_done o un rechazo y no llegaba ninguno de los dos.
+   --
+   -- Misma condicion que fmt_hold y scan_trk_last, que son sus dos vecinas por algo.
+   fmt_skip      <= wb_skip      when (floppy_copy_en_i or wb_active) = '1' else '0';
    scan_trk_last <= copy_trk_last when (floppy_copy_en_i or wb_active) = '1' else
                     std_logic_vector(to_unsigned(39, 7));
 
@@ -1866,6 +1909,7 @@ begin
          tlm_wgmax_i    => fmt_wgmax,
          tlm_idxwr_i    => fmt_idxwr,       -- M4039
          tlm_blind_i    => fmt_blind,
+         tlm_noidx_i    => fmt_noidx,       -- M4052
          ok_map_o       => ok_map,          -- M4035
          tlm_starts_i   => floppy_fmt_starts,
          tlm_refus_i    => floppy_fmt_refus
@@ -1907,12 +1951,14 @@ begin
          fmt_hold_i     => fmt_hold,        -- M4034
          fmt_skip_i     => fmt_skip,        -- M4035
          trk_last_i     => scan_trk_last,   -- M4034
+         disk_in_i      => floppy_disk_in,  -- M4052
          mfm_done_i     => floppy_mfm_done,
          mfm_count_i    => floppy_sect_cnt,
          mfm_id_track_i  => floppy_id_track,
          mfm_id_sector_i => floppy_id_sector,
 
          scan_done_o   => floppy_scan_done,
+         no_disk_o     => floppy_no_disk_o,   -- M4053
          bad_tracks_o  => floppy_bad_trk,
          sect_ref_o    => floppy_sector_count_o,
          cur_track_o   => floppy_cur_track,
@@ -1973,7 +2019,8 @@ begin
          tlm_stopst_o => fmt_stopst,
          tlm_wgmax_o  => fmt_wgmax,
          tlm_idxwr_o  => fmt_idxwr,       -- M4039
-         tlm_blind_o  => fmt_blind
+         tlm_blind_o  => fmt_blind,
+         tlm_noidx_o  => fmt_noidx        -- M4052
       ); -- i_floppy_write
 
    -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,

@@ -367,6 +367,21 @@ signal main_floppy_wb_active  : std_logic;
 signal main_floppy_wb_pending : std_logic;
 signal main_floppy_wrote_ok   : std_logic;   -- M4039
 signal main_floppy_dump_en    : std_logic;   -- M4044
+
+-- CPC4MEGA65 M4045: ESTADO DEL CORE HACIA EL FIRMWARE.
+--
+-- Hasta aqui no existia camino core -> QNICE para esto. Los bits del menu los escribe el Shell
+-- y el core solo los lee, asi que para que una accion se desmarque sola al terminar hace falta
+-- que el firmware SEPA que ha terminado. Este es el unico dato que necesita.
+--
+-- Solo lectura, cuatro bits, y cruzan de dominio con cdc_stable como todo lo demas.
+signal main_floppy_op_end     : std_logic;   -- M4047
+signal main_core_status       : std_logic_vector(4 downto 0);   -- M4052: cinco acciones
+signal qnice_core_status      : std_logic_vector(4 downto 0);
+signal main_floppy_dump_done  : std_logic;   -- M4052
+signal main_floppy_no_disk    : std_logic;   -- M4053
+signal led_end_col            : std_logic_vector(23 downto 0);   -- M4053
+signal led_res_col            : std_logic_vector(23 downto 0) := x"000000";
 signal main_floppy_tgt_b      : std_logic;   -- '1' = la disquetera fisica va a la unidad B:
 signal main_dpll_en           : std_logic;   -- M4023: separador DPLL
 signal floppy_we_a            : std_logic;
@@ -377,6 +392,7 @@ signal main_floppy_fmt_en     : std_logic;
 signal main_floppy_fmt_busy   : std_logic;
 signal main_floppy_fmt_done   : std_logic;
 signal main_floppy_fmt_refus  : std_logic;
+signal main_floppy_refus_now  : std_logic;   -- M4056: rechazo VIGENTE, ver donde se asigna
 signal main_floppy_fmt_full   : std_logic;
 -- DENSEL: por defecto '1' (doble densidad segun la convencion mas comun); el menu lo invierte
 -- para poder probar la otra polaridad sin recompilar. Solo afecta a la escritura.
@@ -549,6 +565,8 @@ begin
          floppy_error_o          => main_floppy_error,
          floppy_index_blink_o    => main_floppy_blink,
          floppy_disk_in_o        => main_floppy_disk_in,
+         floppy_dump_done_o      => main_floppy_dump_done,   -- M4052
+         floppy_no_disk_o        => main_floppy_no_disk,     -- M4053
          floppy_mfm_done_o       => main_floppy_mfm_done,
          floppy_sector_count_o   => main_floppy_sect_cnt,
          floppy_is_hd_o          => main_floppy_is_hd,
@@ -752,6 +770,11 @@ begin
             qnice_mount_b_we     <= qnice_dev_we_i;
             qnice_dev_data_o     <= x"00" & qnice_mount_b_data;
 
+         -- M4045: estado del core, solo lectura. Lo lee HANDLE_CORE_IO en cada iteracion del
+         -- bucle del Shell, asi que tiene que ser barato: un mux de cuatro bits ya sincronizados.
+         when C_DEV_CPC_STATUS =>
+               qnice_dev_data_o     <= "00000000000" & qnice_core_status;
+
          when others => null;
       end case;
    end process core_specific_devices;
@@ -794,6 +817,18 @@ begin
    main_dpll_en <= '0';
    floppy_we_a       <= main_floppy_buf_we and not main_floppy_tgt_b;
    floppy_we_b       <= main_floppy_buf_we and     main_floppy_tgt_b;
+
+   -- M4045: el estado cruza al dominio de QNICE. Cuatro niveles independientes, cada uno
+   -- estable durante milisegundos: cdc_stable es justo lo que pide el caso.
+   i_cdc_core_status : entity work.cdc_stable
+      generic map (
+         G_DATA_SIZE => 5
+      )
+      port map (
+         src_data_i  => main_core_status,
+         dst_clk_i   => qnice_clk_i,
+         dst_data_o  => qnice_core_status
+      ); -- i_cdc_core_status
 
    i_mount_buf_a : entity work.dualport_2clk_ram
       generic map (
@@ -897,6 +932,28 @@ begin
                           not main_osm_control_i(C_MENU_FLOPPY_OFF);
    -- El automatico NO se anula con la disquetera en Off: lo que se anula es la disquetera
    -- entera, asi que el interruptor puede quedarse encendido entre sesiones sin efecto.
+   -- M4047: cada bit dice 'LA OPERACION DE ESTA OPCION HA TERMINADO', no 'ha pasado algo'.
+   --
+   -- La version anterior usaba main_floppy_fmt_done para el formateo, y ESE es el 'pista
+   -- terminada' del escritor: pulsa 40 veces durante un formateo y acaba en bajo, asi que la
+   -- opcion no se desmarcaba nunca. El fin de la OPERACION -de las cuatro- es el fin del
+   -- recorrido de floppy_scan, mas el rechazo del copiador, que tambien la termina aunque sea
+   -- sin escribir nada.
+   --
+   -- Y cada bit se cruza con SU propia opcion de menu, para que el firmware sepa cual
+   -- desmarcar sin tener que adivinarlo.
+   main_floppy_op_end <= main_floppy_scan_done or main_floppy_copy_refus;
+
+    -- M4052: bit 4, el volcado de telemetria. No sale de op_end porque el volcado no recorre
+    -- el disco: lo sirve el firmware en cuanto puede, asi que su final es su propio acuse.
+    -- Era la unica accion que no se desmarcaba sola, y no por criterio sino por olvido.
+    main_core_status <= (main_floppy_dump_done and main_floppy_dump_en) &
+                        (main_floppy_op_end and main_floppy_wb_en)   &
+                       (main_floppy_op_end and main_floppy_copy_en) &
+                       (main_floppy_op_end and main_osm_control_i(C_MENU_FLOPPY_FMT)) &
+                       (main_floppy_op_end and main_osm_control_i(C_MENU_FLOPPY_TEST));
+
+
    main_floppy_dump_en <= main_osm_control_i(C_MENU_FLOPPY_DUMP) and
                           not main_osm_control_i(C_MENU_FLOPPY_OFF);
    main_floppy_wb_auto <= main_osm_control_i(C_MENU_FLOPPY_WBAUTO) and
@@ -1002,13 +1059,67 @@ begin
    -- que teniamos; desde que hay volcado de telemetria no aporta nada y solo molesta.
    -- Verde = todo bien, ambar = hubo sectores defectuosos. Durante la operacion se mantiene
    -- el parpadeo por pista, que si informa de que avanza.
+   -- CPC4MEGA65 M4053: EL COLOR DEL DESTELLO SE CONGELA, NO SE MIRA EN VIVO.
+   --
+   -- El destello duraba 0,5 s pero su color salia de senales que para entonces YA HAN CAIDO:
+   -- en cuanto el firmware desmarca la opcion se va main_floppy_enable, y con el scan_done,
+   -- fmt_done y los rechazos. El color se descolgaba hasta el ultimo 'else' de la cascada, que
+   -- es VERDE. O sea que el indicador decia 'todo bien' pasara lo que pasara, incluido un
+   -- rechazo. M4051 arreglo el DISPARO del destello; esto arregla lo que el destello DICE.
+   --
+   -- Y se empeoro solo al hacer que M4052 borrase el bit del menu al instante en vez de esperar
+   -- a que el menu volviera: el margen para leer el color en vivo paso de segundos a
+   -- milisegundos. Automatizar la limpieza de un estado rompe lo que dependia de que durase;
+   -- van cinco veces en este subsistema.
+   -- CPC4MEGA65 M4056: EL RECHAZO ENGANCHADO SOLO SIGNIFICA ALGO MIENTRAS SE ESCRIBE.
+   --
+   -- M4054 hizo refused_o pegajoso hasta la operacion de ESCRITURA siguiente, porque duraba dos
+   -- ciclos y el LED lo miraba tarde. Efecto secundario: floppy_write solo ve el enable de
+   -- escritura, asi que una LECTURA posterior no lo limpia y se encuentra un rechazo ajeno.
+   --
+   -- En M4054 tape UN consumidor -el color congelado del destello- y no busque los demas EN EL
+   -- MISMO FICHERO. Habia dos mas en la cascada de color en vivo, y el usuario lo vio a la
+   -- primera: tras un formateo rechazado, la lectura siguiente PARPADEABA EN ROJO todo el
+   -- recorrido y solo al terminar se ponia verde.
+   --
+   -- Por eso se acota UNA VEZ, aqui, en vez de en cada sitio: el proximo que necesite "se ha
+   -- negado" coge esta senal y no puede equivocarse.
+   main_floppy_refus_now <= main_floppy_fmt_refus and main_floppy_fmt_en;
+
+   -- M4054: el orden de esta cascada ES la respuesta, y cambia dos cosas respecto a M4053.
+   --
+   -- 1. LA UNIDAD VACIA MANDA sobre el rechazo. Son dos formas de no escribir, pero "no hay
+   --    disquete" es la causa concreta y accionable; "se nego" sin mas no le dice al usuario
+   --    que hacer.
+   --
+   -- 2. El rechazo del formateador solo cuenta SI ESTAMOS ESCRIBIENDO: ver main_floppy_refus_now.
+   led_end_col <= x"FF8000" when main_floppy_no_disk = '1' else
+                  x"FF0000" when (main_floppy_refus_now = '1' or
+                                  main_floppy_copy_refus = '1') else
+                  x"FF8000" when main_floppy_bad_trk /= "00000" else
+                  x"FF8000" when (main_floppy_fmt_en = '1' and
+                                  main_floppy_wrote_ok = '0') else
+                  x"00FF00";
+
    led_oneshot_proc : process (main_clk)
    begin
       if rising_edge(main_clk) then
-         done_d     <= main_floppy_scan_done or main_floppy_fmt_done;
-         fin_edge   <= (main_floppy_scan_done or main_floppy_fmt_done) and not done_d;
+            -- M4055: EL DESTELLO ES DEL FINAL DE LA OPERACION, Y fmt_done ES POR PISTA.
+            --
+            -- fmt_done pulsa UNA VEZ POR PISTA - lo dice su propio comentario desde M4047, y aun
+            -- asi seguia aqui dentro. No molestaba mientras el destello estaba condicionado a
+            -- led_finished, porque entonces se apagaba solo. Al soltarlo en M4053 para que el
+            -- color congelado se viera pase lo que pase, cada pista paso a relanzar medio segundo
+            -- de destello: con una pista cada ~200 ms el verde NO SE APAGA NUNCA y se come el
+            -- BLANCO de "formateando", que es la unica senal de que la cosa avanza.
+            --
+            -- El final de la OPERACION es main_floppy_op_end, que ya existe desde M4047 y es
+            -- exactamente esto. Se usa ese y se acabo la duplicidad.
+            done_d     <= main_floppy_op_end;
+            fin_edge   <= main_floppy_op_end and not done_d;
 
          if fin_edge = '1' then
+            led_res_col <= led_end_col;   -- M4053: congelar el RESULTADO
             oneshot_cnt <= C_ONESHOT;
          elsif oneshot_cnt /= 0 then
             oneshot_cnt <= oneshot_cnt - 1;
@@ -1019,10 +1130,13 @@ begin
    -- M4034: un rechazo de la copia tambien es un FINAL, y ademas es el que mas falta hace
    -- avisar: llega en microsegundos, antes de que la mecanica se mueva, y sin esto el usuario
    -- marcaria la opcion y no pasaria absolutamente nada.
-   led_finished <= '1' when (main_floppy_scan_done = '1' or main_floppy_fmt_done = '1' or
-                             main_floppy_copy_refus = '1') else '0';
+   -- M4055: fuera fmt_done tambien de aqui, y por el mismo motivo. Con el dentro, "la operacion
+   -- ha terminado" era cierto 40 veces durante un formateo, asi que el LED se apagaba entre
+   -- pistas ('0' when led_finished) en vez de mostrar el blanco de que se esta escribiendo.
+   -- main_floppy_op_end ya dice esto bien.
+   led_finished <= main_floppy_op_end;
 
-   floppy_led_on  <= '1' when (led_finished = '1' and oneshot_cnt /= 0) else
+   floppy_led_on  <= '1' when oneshot_cnt /= 0 else
                      '0' when led_finished = '1' else
                      blink_on                     when main_floppy_mfm_done = '1' and blink_count /= "00000" else
                      '1'                          when main_floppy_mfm_done = '1' else
@@ -1049,8 +1163,9 @@ begin
    --   AMBAR = hubo sectores o pistas defectuosas
    -- Lo demas (densidad, numeracion CPC, estados del formateo) ya lo dice el volcado con
    -- mucho mas detalle; el LED solo tiene que responder "ha ido bien o no".
-   floppy_led_col <= x"00FF00" when (led_finished = '1' and main_floppy_bad_trk = "00000"
-                                     and main_floppy_fmt_refus = '0'
+   floppy_led_col <= led_res_col when oneshot_cnt /= 0 else   -- M4053
+                     x"00FF00" when (led_finished = '1' and main_floppy_bad_trk = "00000"
+                                     and main_floppy_refus_now = '0'
                                       and main_floppy_copy_refus = '0'
                                       -- M4039: y que se haya ESCRITO de verdad. Sin esto el
                                       -- verde salio 40 veces seguidas con la puerta abierta
@@ -1059,7 +1174,7 @@ begin
                                       and (main_floppy_wrote_ok = '1' or
                                            main_floppy_fmt_en = '0')) else
                      x"FF8000" when led_finished = '1' else
-                     x"FF0000" when main_floppy_fmt_refus = '1' else
+                     x"FF0000" when main_floppy_refus_now = '1' else
                      x"FFFFFF" when main_floppy_fmt_busy  = '1' else
                      x"0000FF" when (main_floppy_fmt_done = '1' and main_floppy_id_cpc = '1') else
                      x"FF8000" when (main_floppy_fmt_done = '1' and main_floppy_fmt_full = '1') else
@@ -1083,7 +1198,14 @@ begin
    -- lo quedaba para siempre mientras la opcion estuviera marcada en el menu, asi que tras una
    -- lectura ya no se veia la actividad del u765.
    floppy_led_own <= '1' when (main_floppy_enable = '1' and
-                               not (led_finished = '1' and oneshot_cnt = 0)) else '0';
+                               not (led_finished = '1' and oneshot_cnt = 0))
+                              -- M4045: el destello se queda con el LED hasta que expire, pase lo
+                              -- que pase con la opcion del menu. Hace falta porque desde esta
+                              -- build el firmware la DESMARCA SOLA en cuanto la operacion
+                              -- termina, y eso tira main_floppy_enable en milisegundos: sin
+                              -- esto, la funcion nueva se cargaria la senal de 'ha ido bien o
+                              -- mal' que se puso a peticion del usuario en M4033.
+                              or oneshot_cnt /= 0 else '0';
 
    -- M4035: AMARILLO MIENTRAS QUEDE ALGO SIN VOLCAR AL DISQUETE.
    --

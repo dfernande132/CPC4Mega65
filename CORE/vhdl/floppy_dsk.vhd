@@ -119,6 +119,9 @@ entity floppy_dsk is
       -- M4039: indices vistos con WGATE abierto, y los que la ventana ciega ha rechazado
       tlm_idxwr_i    : in  std_logic_vector(15 downto 0) := (others => '0');
       tlm_blind_i    : in  std_logic_vector(15 downto 0) := (others => '0');
+      -- M4052: rechazos por no ver el indice = no habia disquete dentro. Ocupa el byte 11 del
+      -- bloque global, que estaba reservado a cero desde M4019.
+      tlm_noidx_i    : in  std_logic_vector(7 downto 0) := (others => '0');
       tlm_starts_i   : in  std_logic_vector(7 downto 0);
       tlm_refus_i    : in  std_logic_vector(7 downto 0);
 
@@ -496,12 +499,12 @@ begin
                   tix    := to_integer(hdr_idx);
                   case tix is
                      when 0 to 5 => data_r <= C_TLM_SIG(tix);          -- "CPCTLM"
-                     when 6      => data_r <= x"06";                   -- version del mapa (M4039)
+                     when 6      => data_r <= x"07";                   -- version del mapa (M4052)
                      when 7      => data_r <= std_logic_vector(nonce);
                      when 8      => data_r <= std_logic_vector(wr_count(7 downto 0));
                      when 9      => data_r <= std_logic_vector(wr_count(15 downto 8));
                      when 10     => data_r <= "0000" & std_logic_vector(wr_count(19 downto 16));
-                     when 11     => data_r <= x"00";
+                     when 11     => data_r <= tlm_noidx_i;             -- M4052: sin disquete
                      when 12     => data_r <= std_logic_vector(trk_written);
                      when 13     => data_r <= "000" & tlm_badtrk_i;
                      when 14     => data_r <= tlm_flags_i;

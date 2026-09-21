@@ -1,8 +1,9 @@
 # Repite EXACTAMENTE las comprobaciones de floppy_copy.vhd sobre un .dsk, para saber si el core
-# lo aceptaria antes de gastar un disquete. Mismos ocho codigos de rechazo.
+# lo aceptaria antes de gastar un disquete. M4051: el 7 ya no existe, las pistas sin
+# formatear se SALTAN, y aqui se dice cuales para poder contrastarlo con la telemetria.
 param([Parameter(Mandatory=$true)][string[]]$dsk)
 
-$MAXTRK = 42
+$MAXTRK = 45
 $MAXSEC = 9
 $BUFSZ  = 262144
 
@@ -26,11 +27,14 @@ foreach ($path in $dsk) {
    $off = 256
    $tsize = $b[0x32] -bor ($b[0x33] -shl 8)
    $secs = @()
+   $skip = @()
    if ($err -eq 0) {
       for ($t = 0; $t -lt $ntrk -and $err -eq 0; $t++) {
          if ($ext) {
             $ts = $b[0x34 + $t]
-            if ($ts -eq 0) { $err = 7; $det = "pista $t sin formatear"; break }
+            # OJO: el "continue" NO avanza $off, y es correcto: una pista de tamano 0 no
+            # ocupa ni un byte del fichero.
+            if ($ts -eq 0) { $skip += $t; continue }   # M4051: sin formatear = se salta
             $tsize = $ts * 256
          }
          if ($off + 0x18 -ge $b.Length) { $err = 8; $det = "pista $t fuera del fichero"; break }
@@ -53,7 +57,8 @@ foreach ($path in $dsk) {
    if ($err -eq 0) {
       $ids = ""
       for ($s = 0; $s -lt $b[256 + 0x15]; $s++) { $ids += ("{0:X2} " -f $b[256 + 0x18 + $s*8 + 2]) }
-      "OK        {0,-62} {1} {2} pistas, sectores pista0: {3}" -f $name, $tipo, $ntrk, $ids.Trim()
+      $sk = if ($skip.Count) { "  SALTA {0}: {1}" -f $skip.Count, ($skip -join ",") } else { "" }
+      "OK        {0,-62} {1} {2} pistas, pista0: {3}{4}" -f $name, $tipo, $ntrk, $ids.Trim(), $sk
    } else {
       "RECHAZO {0}  {1,-62} {2} ({3})" -f $err, $name, $tipo, $det
    }

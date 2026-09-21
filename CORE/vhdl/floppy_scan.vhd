@@ -66,6 +66,20 @@ entity floppy_scan is
       -- secuenciador una lista de pistas.
       fmt_skip_i     : in  std_logic := '0';
       trk_last_i     : in  std_logic_vector(6 downto 0) := std_logic_vector(to_unsigned(G_TRACKS - 1, 7));
+      -- CPC4MEGA65 M4052: '1' = se han visto pulsos de indice hace poco, o sea HAY DISQUETE
+      -- DENTRO y girando. Lo mide floppy_phys y hasta ahora solo servia para el color del LED.
+      --
+      -- Sin el, la unidad vacia era un cuelgue en los cuatro modos: nada de lo que mueve a
+      -- floppy_mfm ni a floppy_write ocurre sin indice, asi que no habia mfm_done ni fmt_done,
+      -- no habia scan_done, y por tanto tampoco el bit de estado que desde M4045 desmarca la
+      -- opcion del menu. El motor se quedaba girando hasta que el usuario lo desmarcaba a mano.
+      --
+      -- El recalibrado no lo detecta: el sensor de pista 0 es mecanico y responde con la unidad
+      -- vacia igual que llena, asi que phys_ready_i sube sin disquete.
+      --
+      -- Se mira DESPUES de phys_ready_i a proposito: hasta que el motor no ha arrancado no hay
+      -- indices que ver y la respuesta seria que no hay disquete siempre.
+      disk_in_i      : in  std_logic := '1';
       mfm_done_i     : in  std_logic;
       mfm_count_i    : in  std_logic_vector(4 downto 0);
       -- Numero de pista que viene ESCRITO en la cabecera de los sectores. Es la medida que
@@ -78,6 +92,10 @@ entity floppy_scan is
 
       -- Resultado del recorrido
       scan_done_o    : out std_logic;
+      -- M4053: '1' = el recorrido termino porque la unidad estaba VACIA. Sin esto el final por
+      -- unidad vacia es indistinguible de un final correcto: cero pistas malas, cero rechazos,
+      -- o sea LED VERDE diciendo que todo ha ido bien cuando no se ha leido nada.
+      no_disk_o      : out std_logic;
       -- Pistas cuyo recuento NO coincide con el de la pista 0. Cero = disco entero legible.
       bad_tracks_o   : out std_logic_vector(4 downto 0);
       -- Sectores por pista observados en la pista 0, que es la referencia
@@ -128,6 +146,8 @@ architecture beh of floppy_scan is
    signal dsk_strt_r : std_logic := '0';
    signal trk_done_r : std_logic := '0';
    signal fmt_strt_r : std_logic := '0';   -- M4027
+   signal img_strtd  : std_logic := '0';   -- M4052: ya se aviso de imagen nueva en este recorrido
+   signal nodisk_r   : std_logic := '0';   -- M4053
 
 begin
 
@@ -136,6 +156,7 @@ begin
    mfm_restart_o <= restart_r;
    mfm_expect_o  <= std_logic_vector(sect_ref);
    scan_done_o   <= done_r;
+   no_disk_o     <= nodisk_r;
    bad_tracks_o  <= std_logic_vector(bad_cnt);
    sect_ref_o    <= std_logic_vector(sect_ref);
    cur_track_o   <= std_logic_vector(track);
@@ -166,6 +187,8 @@ begin
             pos_exact  <= '1';
             pos_double <= '1';
             id_cpc_r   <= '0';
+            img_strtd  <= '0';      -- M4052
+            nodisk_r   <= '0';      -- M4053
          else
             case state is
 
@@ -173,19 +196,20 @@ begin
                   -- floppy_phys arranca solo con enable_i: aqui se espera a que recalibre.
                   track      <= (others => '0');
                   bad_cnt    <= (others => '0');
-                  -- M4027: en modo formateo no hay imagen que construir, asi que no se avisa
-                  -- a floppy_dsk. Si se avisara, borraria el buffer a 0xE5 sin necesidad y
-                  -- dejaria una imagen a medias que no corresponde a nada.
-                  if fmt_mode_i = '0' then
-                     dsk_strt_r <= '1';     -- empieza una imagen nueva
-                  end if;
+                  img_strtd  <= '0';         -- M4052
+                  nodisk_r   <= '0';         -- M4053
                   state      <= SC_WAIT_READY;
 
                when SC_WAIT_READY =>
                   if phys_error_i = '1' then
                      state <= SC_DONE;          -- la mecanica no responde, no hay nada que leer
                   elsif phys_ready_i = '1' then
-                     if fmt_mode_i = '1' then
+                     if disk_in_i = '0' then
+                        -- M4052: unidad vacia. Se termina el recorrido AQUI, sin haber tocado
+                        -- nada, para que scan_done desmarque la opcion y pare el motor.
+                        nodisk_r <= '1';      -- M4053
+                        state <= SC_DONE;
+                     elsif fmt_mode_i = '1' then
                         -- M4034: en modo copia, el que copia necesita leer del buffer la
                         -- cabecera de pista ANTES de que se abra WGATE. Mientras la tiene
                         -- sujeta no se arranca: la cabeza ya esta colocada, no corre prisa.
@@ -196,6 +220,26 @@ begin
                            state      <= SC_FMT_ARM;
                         end if;
                      else
+                        -- CPC4MEGA65 M4052: LA IMAGEN NO SE BORRA HASTA SABER QUE HAY DISQUETE.
+                        --
+                        -- Este pulso estaba en SC_IDLE, o sea ANTES de arrancar el motor. Y
+                        -- start_i hace que floppy_dsk borre el buffer entero a 0xE5 (DS_CLEAR).
+                        -- Resultado con la unidad vacia: se destruia la imagen del .dsk que el
+                        -- usuario tuviera montado -la que esta viendo el CPC- y ENCIMA se colgaba
+                        -- sin poder sustituirla por nada. Perdida de datos silenciosa.
+                        --
+                        -- Es la misma familia que el bug del volcado de M4044: no tocar lo que hay
+                        -- hasta tener con que reemplazarlo.
+                        --
+                        -- El borrado son ~195.000 ciclos, 3 ms. La primera pista tarda 200 ms como
+                        -- minimo en dar track_done, asi que hacerlo aqui llega de sobra.
+                        --
+                        -- El pestillo hace falta porque a SC_WAIT_READY se vuelve en CADA pista y
+                        -- un segundo pulso borraria lo ya leido.
+                        if img_strtd = '0' then
+                           dsk_strt_r <= '1';   -- empieza una imagen nueva
+                           img_strtd  <= '1';
+                        end if;
                         restart_r <= '1';       -- empieza a contar esta pista
                         state     <= SC_READ_ARM;
                      end if;

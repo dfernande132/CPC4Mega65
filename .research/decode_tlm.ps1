@@ -57,7 +57,20 @@ $wg = U32 0x4C
 "ciclos WGATE     : {0}   ({1:N1} ms a 64 MHz)" -f $wg, ($wg / 64000.0)
 "pulsos WDATA     : {0}" -f (U32 0x50)
 "formateos        : {0}" -f $b[0x54]
-"rechazos         : {0}" -f $b[0x55]
+$refus = $b[0x55]
+$noidx = if ($ver -ge 0x07) { $b[0x3F] } else { 0 }   # M4052: byte 11 del bloque
+"rechazos         : {0}" -f $refus
+if ($ver -ge 0x07) {
+   "  ...por no ver el indice (SIN DISQUETE DENTRO) : {0}" -f $noidx
+   $prot = $refus - $noidx
+   if ($prot -gt 0) { "  ...por PROTECCION contra escritura            : {0}" -f $prot }
+   if ($noidx -gt 0) {
+      "  Antes de M4052 esto no era un rechazo sino un CUELGUE: floppy_write esperaba"
+      "  el indice para siempre y el recorrido no terminaba nunca."
+   }
+} elseif ($refus -gt 0) {
+   "  (mapa anterior a 0x07: no se puede saber si fue proteccion o falta de disquete)"
+}
 "estado u765      : 0x{0:X4}" -f (U16 0x56)
 
 function Bitmap($off) {
@@ -135,6 +148,13 @@ if ($ver -ge 5) {
    $nom = if ($ss -lt $st.Count) { $st[$ss] } else { "desconocido" }
    "estado en el ultimo cierre     : {0}  ({1})" -f $ss, $nom
    "apertura mas larga             : {0} ciclos = {1:N1} ms   (una pista entera son ~12,8 M = 200 ms)" -f $wgmax, ($wgmax / 64000.0)
+   if ($ver -ge 0x07) {
+      # M4054: antes se acumulaba durante TODA la sesion y no se borraba nunca, asi que un
+      # formateo bueno dejaba este campo alto para siempre y el LED daba VERDE a los rechazos
+      # posteriores. Ahora se borra al empezar cada operacion de ESCRITURA; una LECTURA no lo
+      # toca, que es lo que permite que sea la lectura posterior la que vuelque este bloque.
+      "  (desde M4054 es de la ULTIMA operacion de escritura, no de toda la sesion)"
+   }
    ""
    if ($wgmax -gt 10000000) {
       "  VEREDICTO: se grabaron pistas enteras. El problema, si lo hay, esta en otro sitio."
