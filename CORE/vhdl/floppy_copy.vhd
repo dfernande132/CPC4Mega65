@@ -249,6 +249,24 @@ architecture beh of floppy_copy is
    signal p_gap3  : unsigned(7 downto 0) := to_unsigned(78, 8);
    signal p_noiam : std_logic := '0';
 
+   -- CPC4MEGA65 M4060: GAP3 MAXIMO QUE CABE, POR NUMERO DE SECTORES.
+   --
+   -- El GAP3 que declara un EDSK no siempre es el que hay en el disco: muchos volcadores
+   -- escriben un valor nominal. Los tres 'Batman Forever' declaran 74 con DIEZ sectores, y eso
+   -- son 10*(62+512+74) = 6480 bytes en una vuelta de 6250: no cabe NI QUITANDO el preambulo,
+   -- asi que el indice cortaria la escritura a un tercio del decimo sector, en las 42 pistas.
+   --
+   -- El valor que SI cabe sale de despejar: (6250 - n*574) / n. Para diez sectores da 51, que es
+   -- exactamente lo que declara R-Type Face A -tambien de diez- y que ya copia bien. O sea que
+   -- 51 es lo que hay en el disco de verdad y el 74 del fichero es nominal.
+   --
+   -- Se tabula en vez de dividir: una division por un valor variable es cara en hardware y aqui
+   -- solo hay diez casos posibles. Los valores se recortan a 255 porque el campo es de un byte,
+   -- asi que hasta siete sectores no hay nada que recortar.
+   type t_gap3max is array (0 to 16) of natural range 0 to 255;
+   constant C_GAP3_MAX : t_gap3max :=
+      (0, 255, 255, 255, 255, 255, 255, 255, 207, 120, 51, 0, 0, 0, 0, 0, 0);
+
 begin
 
    -- El indice llega del escritor en 4 bits y el array tiene 9 entradas: se acota aqui una sola
@@ -317,6 +335,7 @@ begin
    main_proc : process (clk_i)
       variable nxt_off : unsigned(18 downto 0);
       variable g_v     : natural range 0 to 255;   -- M4057
+      variable n_v     : natural range 0 to 16;    -- M4060
    begin
       if rising_edge(clk_i) then
          en_d   <= enable_i;
@@ -455,6 +474,18 @@ begin
                when CP_V_NSEC =>
                   if unsigned(rd_data) = 0 or unsigned(rd_data) > G_MAXSEC then
                      err_r <= x"4"; state <= CP_REFUSED;
+                  elsif to_integer(unsigned(rd_data)) * (C_SEC_OVH + C_SECSZ) >
+                        C_TRK_BYTES then
+                     -- M4060: ONCE sectores de 512 bytes no caben en una vuelta NI CON HUECO
+                     -- CERO: 11*574 = 6314 contra 6250. La validacion aceptaba hasta dieciseis y
+                     -- el desbordamiento salia luego, a mitad de escritura y sin aviso.
+                     --
+                     -- Se rechaza AQUI, en la validacion, y no al preparar la pista: alli ya se
+                     -- habrian escrito las pistas anteriores y el disquete quedaria a medias, que
+                     -- es justo lo que la validacion previa existe para evitar.
+                     --
+                     -- Reutiliza el codigo 7, libre desde M4051.
+                     err_r <= x"7"; state <= CP_REFUSED;
                   else
                      v_nsec  <= unsigned(rd_data(4 downto 0));
                      v_sec   <= 0;
@@ -547,13 +578,20 @@ begin
                   else
                      g_v := to_integer(unsigned(rd_data));
                   end if;
-                  p_gap3 <= to_unsigned(g_v, 8);
-                  if C_PREAMBLE + to_integer(p_nsec) * (C_SEC_OVH + C_SECSZ + g_v) >
-                     C_TRK_BYTES then
-                     p_noiam <= '1';
-                  else
+                  n_v := to_integer(p_nsec);
+                  -- M4060: la cascada. Primero se intenta CON preambulo, que es lo que hace un
+                  -- disco normal; si no cabe, SIN el; y solo si tampoco cabe asi se recorta el
+                  -- hueco. De este modo todo lo que ya se copiaba bien se sigue copiando igual y
+                  -- lo unico que cambia es el caso que antes se desbordaba en silencio.
+                  if C_PREAMBLE + n_v * (C_SEC_OVH + C_SECSZ + g_v) <= C_TRK_BYTES then
                      p_noiam <= '0';
+                  else
+                     p_noiam <= '1';
+                     if n_v * (C_SEC_OVH + C_SECSZ + g_v) > C_TRK_BYTES then
+                        g_v := C_GAP3_MAX(n_v);
+                     end if;
                   end if;
+                  p_gap3 <= to_unsigned(g_v, 8);
                   addr_r  <= t_off + to_unsigned(C_T_LIST, 18);
                   rd_wait <= 2; ret <= CP_P_C; state <= CP_RD;
 

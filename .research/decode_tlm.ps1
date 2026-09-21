@@ -121,10 +121,10 @@ if ($ver -ge 3) {
       1 { "firma desconocida (no hay .dsk montado o no es un .dsk)" }
       2 { "dos caras" }
       3 { "numero de pistas imposible" }
-      4 { "una pista tiene 0 o mas de 9 sectores" }
+      4 { "una pista tiene 0 o mas de 16 sectores" }
       5 { "un sector no es de 512 bytes (N distinto de 2)" }
       6 { "un sector dice que es de la cara 1" }
-      7 { "pista sin formatear en un EDSK" }
+      7 { "la pista no cabe en una vuelta (11 o mas sectores de 512)" }
       8 { "la imagen no cabe en el buffer" }
       9 { "no se ha leido el disco: no hay mapa de pistas buenas" }
       default { "codigo desconocido" }

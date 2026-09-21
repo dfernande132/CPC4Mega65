@@ -48,6 +48,10 @@ foreach ($path in $dsk) {
          if ($b[$off + 0x11] -ne 0) { $err = 2; $det = "pista $t dice cara {0}" -f $b[$off+0x11]; break }
          $ns = $b[$off + 0x15]
          if ($ns -eq 0 -or $ns -gt $MAXSEC) { $err = 4; $det = "pista $t tiene $ns sectores"; break }
+         # M4060: espeja la regla nueva del core. ONCE sectores de 512 bytes no caben en una
+         # vuelta ni con hueco cero: 11*574 = 6314 contra 6250. Antes se aceptaban hasta 16 y
+         # el desbordamiento salia a mitad de escritura, sin ningun aviso.
+         if ($ns * 574 -gt 6250) { $err = 7; $det = "pista ${t}: $ns sectores no caben en una vuelta"; break }
          $secs += $ns
          for ($s = 0; $s -lt $ns; $s++) {
             $e = $off + 0x18 + $s * 8
