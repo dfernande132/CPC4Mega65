@@ -132,6 +132,31 @@ constant C_DEV_CPC_MOUNT_B       : std_logic_vector(15 downto 0) := x"0104";  --
 -- (sus puertos ready/motor/sd_rd/sd_wr son de 2 bits: unidad 0 = A:, unidad 1 = B:).
 -- main.vhd lleva un assert que falla si esto deja de ser 2.
 type vd_buf_array is array(natural range <>) of std_logic_vector;
+   -- CPC4MEGA65 M4058 (EXPERIMENTO): base de tiempo rotacional del u765, en cuentas por ms.
+   --
+   -- El u765 NO es un controlador por imagen: es un FDC ROTACIONAL cuyo backend es una imagen.
+   -- Temporiza un byte cada 32 us y modela una vuelta de 205 ms, y espera a que el sector pase
+   -- por debajo de la cabeza antes de servirlo. Eso significa que AMSDOS lleva desde M2
+   -- tragando latencias de hasta una vuelta entera, en hardware y con juegos reales.
+   --
+   -- OJO CON LA ARITMETICA, que ya me equivoque una vez: ce_u765 son 8 MHz, pero el u765
+   -- MULTIPLEXA las dos unidades (u765.sv:464-473) y cada una recibe un incremento uno de cada
+   -- dos pulsos. La base efectiva es 4 MHz, luego 4000 cuentas = 1 ms de verdad.
+   --
+   -- 4000 = disco real, 300 RPM, vuelta de 205 ms. Es el valor por defecto del u765 y el que
+   --        usa el core de MiSTer.
+   -- 8000 = TEST DE ESTRES: 150 RPM, vuelta de 410 ms, byte cada 64 us, y el seek tambien al
+   --        doble de lento porque i_steptimer usa la misma constante. Es el DOBLE de la
+   --        latencia que el Milestone 5 llegaria a necesitar leyendo un disquete de verdad.
+   --        Si el CPC carga igual, la incognita de M5 queda cerrada sin escribir RTL.
+   -- MEDIDO EN HARDWARE (M4058, 21/09/2026): con 8000 el CPC CARGA IGUAL DE BIEN, solo mas
+   -- lento. Bruce Lee tarda 53 s en vez de 31. O sea que AMSDOS aguanta una latencia rotacional
+   -- de 410 ms, el DOBLE de lo que el Milestone 5 llegaria a necesitar leyendo un disquete real.
+   -- La razon 53/31 = 1,71 y no 2,0 separa ademas las dos mitades de la carga: 22 s dependen del
+   -- disco y 9 s de la maquina. La parte de disco escalo exactamente x2, que es lo que confirma
+   -- que esta constante hace lo que creemos.
+   constant C_U765_CYCLES        : natural := 4000;   -- velocidad real. NO tocar sin motivo.
+
 constant C_VDNUM              : natural := 2;
 constant C_VD_DEVICE          : std_logic_vector(15 downto 0) := C_DEV_CPC_VDRIVES;
 constant C_VD_BUFFER          : vd_buf_array := (  C_DEV_CPC_MOUNT_A,

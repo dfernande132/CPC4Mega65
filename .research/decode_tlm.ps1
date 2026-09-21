@@ -11,6 +11,18 @@ if ($sig -ne "CPCTLM") { "*** sin bloque de telemetria en 0x34 (leido '$sig')"; 
 
 $ver = $b[0x3A]
 "version del mapa : 0x{0:X2}" -f $ver
+if ($ver -ge 0x08) {
+   # M4058: base de tiempo rotacional del u765 con la que se tomo ESTE volcado.
+   # 4000 = disco real, 300 RPM, vuelta de 205 ms.  8000 = estres, 150 RPM, 410 ms.
+   # Ojo con la aritmetica: ce_u765 son 8 MHz pero el u765 multiplexa las dos unidades
+   # (u765.sv:464-473), asi que la base efectiva es 4 MHz y 4000 cuentas son 1 ms de verdad.
+   $cyc = [int]$b[0x76] + 256 * [int]$b[0x77]
+   if ($cyc -gt 0) {
+      $vuelta = 205.0 * $cyc / 4000.0
+      "base u765        : {0} cuentas/ms  -> vuelta {1:N0} ms, {2:N0} RPM" -f $cyc, $vuelta, (60000.0 / $vuelta)
+      if ($cyc -ne 4000) { "  OJO: NO es la velocidad real. Este volcado es de un experimento." }
+   }
+}
 
 # OJO: en PowerShell los operadores de bits devuelven el tipo del operando IZQUIERDO, y $b[$o]
 # es un [byte]. Sin el casteo explicito, "byte -bor entero" se TRUNCA a byte y estas dos

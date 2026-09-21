@@ -122,6 +122,10 @@ entity floppy_dsk is
       -- M4052: rechazos por no ver el indice = no habia disquete dentro. Ocupa el byte 11 del
       -- bloque global, que estaba reservado a cero desde M4019.
       tlm_noidx_i    : in  std_logic_vector(7 downto 0) := (others => '0');
+      -- M4058: la base de tiempo rotacional con la que se tomo ESTE volcado. Sin esto, un .dsk
+      -- guardado no dice a que velocidad giraba el disco emulado, y el experimento consiste
+      -- precisamente en cambiarla.
+      tlm_cycles_i   : in  std_logic_vector(15 downto 0) := x"0FA0";
       tlm_starts_i   : in  std_logic_vector(7 downto 0);
       tlm_refus_i    : in  std_logic_vector(7 downto 0);
 
@@ -265,7 +269,16 @@ begin
    end process uptime_proc;
 
    main_proc : process (clk_i)
-      variable slot : integer range 0 to 15;
+      -- M4057: 0 to 31, NO 0 to 15. sec_slot_i son CINCO bits y la asignacion ocurre ANTES de
+      -- la guarda 'if slot < G_SECTORS', asi que el rango tiene que aguantar todo lo que quepa
+      -- en el puerto, no solo lo que la guarda deja pasar.
+      --
+      -- Se podia violar YA ANTES de M4057: la ranura salia de 'R(3..0) - 1', y un sector con el
+      -- nibble bajo a cero -el R=0x00 de Ocean Dynamite 4- daba -1, que en cinco bits es 31.
+      --
+      -- Es EXACTAMENTE el fallo que documenta el comentario de aqui abajo sobre 'fld' (M4029),
+      -- en la misma declaracion y dos lineas mas abajo. Tercera vez en este fichero.
+      variable slot : integer range 0 to 31;
       variable fld  : integer range 0 to 7;
       -- M4029: ERA 0 to 31 Y EL BLOQUE YA LLEGA A 35. Al desbordarse, los indices 32..35
       -- envolvian a 0..3 y devolvian las letras de "CPCTLM" en vez de los contadores:
@@ -499,7 +512,7 @@ begin
                   tix    := to_integer(hdr_idx);
                   case tix is
                      when 0 to 5 => data_r <= C_TLM_SIG(tix);          -- "CPCTLM"
-                     when 6      => data_r <= x"07";                   -- version del mapa (M4052)
+                     when 6      => data_r <= x"08";                   -- version del mapa (M4052)
                      when 7      => data_r <= std_logic_vector(nonce);
                      when 8      => data_r <= std_logic_vector(wr_count(7 downto 0));
                      when 9      => data_r <= std_logic_vector(wr_count(15 downto 8));
@@ -577,10 +590,12 @@ begin
                       when 63     => data_r <= tlm_idxwr_i(15 downto 8);
                       when 64     => data_r <= tlm_blind_i( 7 downto 0);
                       when 65     => data_r <= tlm_blind_i(15 downto 8);
+                     when 66     => data_r <= tlm_cycles_i( 7 downto 0);   -- M4058
+                     when 67     => data_r <= tlm_cycles_i(15 downto 8);
                      when others => data_r <= x"00";
                   end case;
 
-                  if hdr_idx = 65 then
+                  if hdr_idx = 67 then
                      -- M4024: volver a REPOSO, no a DS_RUN. Si no, una segunda lectura no
                      -- vuelve a pasar por DS_IDLE: no se limpia la imagen, no se renueva el
                      -- nonce y los contadores se acumulan. El volcado B de M4023 salio con

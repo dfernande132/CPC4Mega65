@@ -12,6 +12,9 @@ use ieee.numeric_std.all;
 
 library work;
 use work.video_modes_pkg.all;
+-- M4058: C_U765_CYCLES vive en globals.vhd, pero NO se hace "use work.globals.all" aqui: eso
+-- mete el tipo crtrom_buf_array en el espacio de nombres y vuelve AMBIGUAS las concatenaciones
+-- de std_logic_vector de este fichero (main.vhd:981 y siguientes). Se cualifica en el uso.
 
 -- CPC4MEGA65 M2: xpm_cdc_array_single para el cruce core->QNICE del lado SD del u765
 library xpm;
@@ -618,6 +621,8 @@ signal copy_w_id_h        : std_logic_vector(7 downto 0);
 signal copy_w_id_r        : std_logic_vector(7 downto 0);
 signal copy_w_id_n        : std_logic_vector(7 downto 0);
 signal copy_w_data        : std_logic_vector(7 downto 0);
+   signal copy_w_gap3        : std_logic_vector(7 downto 0);   -- M4057
+   signal copy_w_noiam       : std_logic;
 signal wr_sec             : std_logic_vector(3 downto 0);
 signal wr_off             : std_logic_vector(9 downto 0);
 signal dsk_buf_addr       : std_logic_vector(17 downto 0);
@@ -1445,6 +1450,9 @@ begin
                     to_signed(0, 16);
 
    i_u765 : entity work.u765
+      generic map (
+         CYCLES => work.globals.C_U765_CYCLES     -- M4058: ver globals.vhd
+      )
       port map (
          clk_sys      => clk_main_i,
          ce           => cen_u765,
@@ -1818,6 +1826,8 @@ begin
          w_id_r_o    => copy_w_id_r,
          w_id_n_o    => copy_w_id_n,
          w_data_o    => copy_w_data,
+         w_gap3_o    => copy_w_gap3,      -- M4057
+         w_noiam_o   => copy_w_noiam,
 
          busy_o      => copy_busy,
          done_o      => copy_done,
@@ -1910,6 +1920,7 @@ begin
          tlm_idxwr_i    => fmt_idxwr,       -- M4039
          tlm_blind_i    => fmt_blind,
          tlm_noidx_i    => fmt_noidx,       -- M4052
+         tlm_cycles_i   => std_logic_vector(to_unsigned(work.globals.C_U765_CYCLES, 16)),  -- M4058
          ok_map_o       => ok_map,          -- M4035
          tlm_starts_i   => floppy_fmt_starts,
          tlm_refus_i    => floppy_fmt_refus
@@ -2005,6 +2016,8 @@ begin
          src_id_r_i => copy_w_id_r,
          src_id_n_i => copy_w_id_n,
          src_data_i => copy_w_data,
+         src_gap3_i => copy_w_gap3,       -- M4057
+         src_noiam_i => copy_w_noiam,
          src_sec_o  => wr_sec,
          src_off_o  => wr_off,
 
