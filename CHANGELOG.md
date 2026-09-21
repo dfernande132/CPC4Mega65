@@ -56,10 +56,16 @@ CPC 6128 in both directions.
 
 - Only the CPC **6128**. No tape yet. The 464, the 664 and tape are on the
   roadmap.
-- The copier reproduces the great majority of a real test collection. A few
-  images use formats it cannot yet reproduce exactly, and it refuses those
-  rather than writing half a disk; the telemetry records which rule was
-  broken.
+- **The copier reproduces what it can reproduce exactly, and refuses the
+  rest** rather than writing a disk that looks finished and is not. That now
+  includes sector sizes from 128 to 8192 bytes, tracks of up to ten sectors,
+  tracks written without an index mark, and - for copy-protected originals -
+  deleted data marks, sectors with no data field, and data CRCs that are
+  deliberately wrong. Reproducing those faults *is* copying faithfully:
+  correcting them would break the disk. In a test collection of 29 images,
+  two are refused: one whose own signature has bit flips, and one with a
+  track whose sector headers share a single physical data area, which no
+  `.DSK` can describe. The telemetry records which rule was broken.
 - Reading a *physical* disk into an image only supports the standard DATA
   format. Serving tracks straight from the disk - which removes the 26-second
   pre-read entirely - is Milestone 5, targeted at version 1.5.
@@ -75,3 +81,4 @@ have been reported upstream: `FLUSH_CACHE` killing the core when a drive has
 no file behind it, and the settings file restoring *action* menu bits at
 power-on. A third, a register clobbered in `ROSM_SAVE` that froze the OSD
 with two virtual drives, was already fixed in their development branch.
+

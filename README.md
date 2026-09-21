@@ -88,40 +88,40 @@ have to remember to clear them before running the same one again.
 Known issues
 ------------
 
-### Some disks are refused by the copier
+### What the copier can and cannot reproduce
 
-`COPY IMAGE TO DISK !!` refuses an image it cannot reproduce exactly, rather
-than writing half a disk. In a sample of 26 images from a real collection, 8
-are refused today. They fall into three groups, and only the last one is a
-hard limit:
+`COPY IMAGE TO DISK !!` reproduces what it can reproduce *exactly*, and
+refuses the rest rather than writing a disk that looks finished and is not.
 
-- **Unusual but ordinary formats.** Sector sizes other than 512 bytes, for
-  instance. These are a matter of the writer not yet being general enough,
-  and support for them is being added - a 10-sector, 200 KB Ocean disk
-  (R-Type) already copies.
-- **A damaged image.** One file has bit flips in its own signature, so it is
-  not recognised as a `.DSK` at all.
-- **Tracks that no `.DSK` can describe.** One disk has sixteen sector headers
-  sharing one physical data area, each declaring a different length - they
-  add up to more than twice what fits on a track. An EDSK records *what the
-  controller returned*, not *what is on the disk*, so no writer can rebuild
-  that track from the file. Copying the original disk itself would need a
-  flux-level controller, which is on the roadmap.
+It handles sector sizes from 128 to 8192 bytes, tracks of up to ten sectors,
+tracks written without an index mark, and the things copy-protected originals
+use to tell an original from a copy: deleted data marks, sectors with no data
+field at all, and data CRCs that are deliberately wrong. Reproducing those
+faults *is* copying faithfully - correcting them would break the disk, which
+is why the telemetry counts them separately from real errors.
 
-Disks with *unformatted* tracks copy fine - those tracks are simply skipped,
-which is what "unformatted" means. About one image in six has them, usually
-at the end.
+Tracks marked unformatted are skipped, which is what "unformatted" means.
+
+Two things it cannot do, and both are properties of the file rather than of
+the format:
+
+- An image whose own signature has bit flips is not recognised as a `.DSK`.
+- A track whose sector headers share one physical data area, each declaring a
+  different length, cannot be rebuilt from an EDSK at all: the file records
+  what the controller *returned*, not what is *on the disk*. Copying the
+  original disk itself would need a flux-level controller, which is on the
+  roadmap.
 
 When the copier refuses, the LED goes red and the telemetry dump records
 exactly which rule was broken.
 
 ### Other known issues
 
-- **`Dump telemetry` does not untick itself** the way the other actions do.
-  It is a diagnostic tool for the developers and it will be removed from the
-  menu in version 1.0, so this is not going to be fixed. Untick it by hand to
-  dump again. **Note that it overwrites the mounted `.DSK` file** - that is
-  what it is for, but do not point it at an image you care about.
+- **`Dump telemetry` is no longer in the menu.** It overwrites the mounted
+  `.DSK` file, which is what it is for, but that is not something an
+  end-user menu should offer. The mechanism is still in the core and can be
+  put back with a one-line change when a disk problem needs diagnosing at a
+  distance.
 - **Switching the drive off mid-write leaves a half-written track.** Closing
   the write gate immediately is the correct thing to do, but the track that
   was being written is lost. Let the operation finish.
@@ -176,3 +176,5 @@ Credits
 See `AUTHORS`. In short: the Amstrad CPC hardware is Amstrad plc's, the
 MiSTer core is the MiSTer Development Team's, the framework is
 MiSTer2MEGA65's, and the MEGA65 port is mine. No Amstrad ROMs are included.
+
+

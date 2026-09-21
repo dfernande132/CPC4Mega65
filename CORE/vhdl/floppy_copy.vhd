@@ -253,24 +253,11 @@ architecture beh of floppy_copy is
    constant C_GAP3_MIN  : natural := 8;      -- M4061: hueco minimo entre sectores
    signal p_gap3  : unsigned(7 downto 0) := to_unsigned(78, 8);
    signal p_noiam : std_logic := '0';
-
-   -- CPC4MEGA65 M4060: GAP3 MAXIMO QUE CABE, POR NUMERO DE SECTORES.
-   --
-   -- El GAP3 que declara un EDSK no siempre es el que hay en el disco: muchos volcadores
-   -- escriben un valor nominal. Los tres 'Batman Forever' declaran 74 con DIEZ sectores, y eso
-   -- son 10*(62+512+74) = 6480 bytes en una vuelta de 6250: no cabe NI QUITANDO el preambulo,
-   -- asi que el indice cortaria la escritura a un tercio del decimo sector, en las 42 pistas.
-   --
-   -- El valor que SI cabe sale de despejar: (6250 - n*574) / n. Para diez sectores da 51, que es
-   -- exactamente lo que declara R-Type Face A -tambien de diez- y que ya copia bien. O sea que
-   -- 51 es lo que hay en el disco de verdad y el 74 del fichero es nominal.
-   --
-   -- Se tabula en vez de dividir: una division por un valor variable es cara en hardware y aqui
-   -- solo hay diez casos posibles. Los valores se recortan a 255 porque el campo es de un byte,
-   -- asi que hasta siete sectores no hay nada que recortar.
-   type t_gap3max is array (0 to 16) of natural range 0 to 255;
-   constant C_GAP3_MAX : t_gap3max :=
-      (0, 255, 255, 255, 255, 255, 255, 255, 207, 120, 51, 0, 0, 0, 0, 0, 0);
+   -- M4061: aqui vivia C_GAP3_MAX, una tabla de M4060 con el hueco maximo por numero de
+   -- sectores. La sustituyo el recorte iterativo de CP_P_FIT, y ademas sus valores asumian
+   -- sectores de 512 bytes, que es justo lo que M4061 dejo de asumir: se quedaba MAL, no solo
+   -- sin usar. Se borra en vez de dejarla ahi para que nadie la lea dentro de seis meses y
+   -- crea que es la regla vigente.
 
    -- CPC4MEGA65 M4061: EL SECTOR DEJA DE MEDIR SIEMPRE 512 BYTES.
    --

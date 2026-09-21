@@ -48,16 +48,21 @@ foreach ($path in $dsk) {
          if ($b[$off + 0x11] -ne 0) { $err = 2; $det = "pista $t dice cara {0}" -f $b[$off+0x11]; break }
          $ns = $b[$off + 0x15]
          if ($ns -eq 0 -or $ns -gt $MAXSEC) { $err = 4; $det = "pista $t tiene $ns sectores"; break }
-         # M4060: espeja la regla nueva del core. ONCE sectores de 512 bytes no caben en una
-         # vuelta ni con hueco cero: 11*574 = 6314 contra 6250. Antes se aceptaban hasta 16 y
-         # el desbordamiento salia a mitad de escritura, sin ningun aviso.
-         if ($ns * 574 -gt 6250) { $err = 7; $det = "pista ${t}: $ns sectores no caben en una vuelta"; break }
          $secs += $ns
+         $bud = 0
          for ($s = 0; $s -lt $ns; $s++) {
             $e = $off + 0x18 + $s * 8
             if ($b[$e + 1] -ne 0) { $err = 6; $det = "pista $t sector $s dice cara 1"; break }
-            if ($b[$e + 3] -ne 2) { $err = 5; $det = "pista $t sector $s tiene N={0}" -f $b[$e+3]; break }
+            # M4061: se aceptan N = 0..6 (128..8192 B). El tope esta MEDIDO: N=7 aparece una
+            # sola vez en la coleccion, y en una pista irreproducible de todas formas.
+            if ($b[$e + 3] -gt 6) { $err = 5; $det = "pista $t sector $s tiene N={0}" -f $b[$e+3]; break }
+            # longitud REAL del EDSK; si vale 0 (.dsk estandar) se cae en 128 << N
+            $real = [int]$b[$e + 6] + 256 * [int]$b[$e + 7]
+            if ($real -eq 0) { $real = 128 * [Math]::Pow(2, [int]$b[$e + 3]) }
+            $bud += 62 + $real
          }
+         # M4061: la pista tiene que caber en una vuelta con un hueco minimo entre sectores
+         if ($bud + $ns * 8 -gt 6250) { $err = 7; $det = "pista ${t}: no cabe en una vuelta ($bud B)"; break }
          if ($err -ne 0) { break }
          if ($off + $tsize -gt $BUFSZ) { $err = 8; $det = "no cabe en el buffer"; break }
          $off += $tsize
