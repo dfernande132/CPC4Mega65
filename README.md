@@ -1,67 +1,165 @@
-MiSTer2MEGA65
-=============
+Amstrad CPC for MEGA65 (CPC4MEGA65)
+===================================
 
-MiSTer2MEGA65 is a framework to simplify porting MiSTer cores to the MEGA65.
+A port of the **Amstrad CPC 6128** to the **MEGA65**, built on top of the
+[MiSTer2MEGA65](https://github.com/sy2002/MiSTer2MEGA65) (M2M) framework and
+based on the
+[MiSTer-devel/Amstrad_MiSTer](https://github.com/MiSTer-devel/Amstrad_MiSTer)
+core (`T80pa` Z80 CPU, `ga40010` gate array, `UM6845R` CRTC, `YM2149` PSG,
+`i8255` PPI, `u765` uPD765 floppy controller).
 
-![Title Image](doc/wiki/assets/MiSTer2MEGA65-Title.png)
+**Current status: Milestone 4 - prerelease for testers.** The CPC 6128 boots
+end-to-end on real MEGA65 hardware with working keyboard, video, sound,
+joystick and two `.DSK` disk drives. What makes this port unusual is the
+fourth milestone: **the MEGA65's internal 3.5" floppy drive works as a real
+CPC drive** - it reads genuine CPC disks, formats them, writes `.DSK` images
+onto physical disks, and writes changed tracks back. All of that is confirmed
+on real hardware against a real CPC 6128: a disk formatted on the MEGA65 is
+read by the CPC, and a game copied on the MEGA65 boots on the CPC.
 
-Learn more by
-[watching this YouTube video](https://youtu.be/9Ib7z64z9N4)
-and get started by reading the
-[MiSTer2MEGA65 Wiki](https://github.com/sy2002/MiSTer2MEGA65/wiki).
+See `.research/PORTING-PLAN.md` and `DECISIONES.md` (in the parent directory)
+for the full, detailed log of the whole investigation and every decision made
+along the way.
 
-TL;DR
------
+Feature overview
+----------------
 
-1. Scroll up and press the "Use this template" button to start a new
-   MiSTer2MEGA65 project. Then fork the MiSTer core you want to port
-   and make it a Git submodule of your newly created project.
+- **Machine**: Amstrad CPC 6128 (128 KB RAM), PAL video, Locomotive-compatible
+  keyboard mapping on the MEGA65 keyboard, and joystick support with
+  swappable ports.
+- **Disk drives**: two virtual drives, `Drive A:` and `Drive B:`, each able to
+  mount a `.DSK` or `.EDSK` image from the SD card - exactly like any other
+  MiSTer2MEGA65 core.
+- **Real floppy drive**: either virtual drive can be replaced by the MEGA65's
+  own internal 3.5" drive. See the next section; this is the headline feature.
+- **Video**: CRT emulation, 4:3 / 5:4 / 16:9 HDMI aspect ratios, HDMI zoom.
+- **Audio**: audio improvement filter.
+- **Settings are remembered** across power cycles, with one deliberate
+  exception: see "Actions are never remembered" below.
 
-2. Wrap the MiSTer core inside `CORE/vhdl/main.vhd` while
-   adjusting the clocks in `CORE/vhdl/clk.vhd`. Provide RAMs, ROMs and other
-   devices in `CORE/vhdl/mega65.vhd` and wire everything correctly.
+The real floppy drive
+---------------------
 
-3. Configure your core's behavior, including how the start screen looks like,
-   what ROMs should be loaded (and where to), the abilities of the
-   <kbd>Help</kbd> menu and more in `CORE/vhdl/config.vhd` and in
-   `CORE/vhdl/globals.vhd`.
+Set `Internal floppy` to `Drive A:` or `Drive B:` in the Options menu and that
+drive stops being an image and becomes the physical 3.5" drive in your MEGA65.
+Everything below happens on genuine CPC DATA-format disks (40 tracks, single
+sided, 9 x 512-byte sectors, IDs `&C1`-`&C9`).
 
-**DONE** your core is ported to MEGA65! :-)
+| Menu item | What it does |
+|---|---|
+| `Read disk now` | Reads the whole disk and builds a `.DSK` image in memory that the CPC then sees as a normal drive. About 26 seconds. |
+| `FORMAT WHOLE DISK !!` | Formats all 40 tracks in CPC DATA format. **Destroys the disk.** |
+| `COPY IMAGE TO DISK !!` | Writes the `.DSK` mounted in the *other* drive onto the physical disk. **Destroys the disk.** |
+| `WRITE BACK TO DISK !!` | Writes back only the tracks the CPC has modified since the last read. |
+| `Auto write-back` | Does the same automatically, one second after the CPC stops writing. |
 
-*Obviously, this is a shameless exaggeration of how easy it is to work with
-MiSTer2MEGA65, but you get the gist of it.*
+### What the LED tells you
 
-Getting started, detailed documentation and support
----------------------------------------------------
+The MEGA65's drive LED is the main feedback channel, and it is deliberately
+blunt - it answers "did it work?", not "what happened":
 
-1. You might want to start your journey
-  [here](https://github.com/sy2002/MiSTer2MEGA65/wiki/1.-What-is-MiSTer2MEGA65)
-  and then follow the reading track that is pointed out in the
-  respective chapters.
+- **Blinking** while an operation is running.
+- **Green** for half a second when an operation finished correctly.
+- **Amber** for half a second when it finished badly: unreadable tracks, or
+  nothing written, or **no disk in the drive**.
+- **Red** for half a second when the drive refused: the disk is
+  write-protected, or the image cannot be copied (see "Known issues").
+- **Amber, steady** while there are still modified tracks that have not been
+  written back yet. **Do not eject the disk while the LED is amber.** No
+  timer can promise you a safe moment; a "not yet" signal can.
 
-2. Run through this tutorial: https://files.mega65.org?ar=898d573b-d30d-4438-8893-09455bd16400
+### Actions are never remembered
 
-3. Choose the MiSTer core you want to port here: https://mister-devel.github.io/MkDocs_MiSTer/
+`Read disk now`, `FORMAT`, `COPY` and `WRITE BACK` are *actions*, not
+settings. They are cleared every time the core starts, on purpose: the
+framework's settings file stores every menu bit alike, so without this a core
+that was switched off with `FORMAT` ticked would format whatever disk was in
+the drive at power-on. `Internal floppy` and `Auto write-back` *are*
+remembered, because those are states.
 
-4. Use [The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide) to do the actual work. The guide contains all steps "From Zero to Hero".
+Actions also untick themselves as soon as the operation ends, so you never
+have to remember to clear them before running the same one again.
 
-Status of the framework
------------------------
+Known issues
+------------
 
-**The MiSTer2MEGA (M2M) framework is stable and ready for being used.**
-The reference implementation of the M2M framework is the
-[Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65).
-Additionally there is already
-[a decent amount of cores](https://cores.mega65.org)
-that are based on the M2M framework. Head to the
-[Alternate MEGA65 cores](https://sy2002.github.io/m65cores/)
-website to learn more.
+### Copy-protected disks cannot be copied
 
-[The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide)
-is very comprehensive - if you miss something or have questions, contact us on Discord.
+`COPY IMAGE TO DISK !!` writes CPC DATA-format tracks. Disks that use a
+non-standard geometry cannot be reproduced by it and the core refuses the
+image rather than writing half a disk. In a sample of 28 images from a real
+collection, 8 were refused, all of them genuine 1980s copy protection:
+sectors declared as 8 KB (`N=6`), 16 sectors on a track, sector sizes of
+`N=0` or `N=3`, and one image whose signature is neither `DSK` nor `EDSK`.
 
-The [Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65) is the reference implementation
-of the M2M framework and [The Ultimate MiSTer2MEGA65 Porting Guide](https://github.com/sy2002/MiSTer2MEGA65/wiki/The-Ultimate-MiSTer2MEGA65-Porting-Guide) uses it heavily to provide you with examples. Don't hesitate to take code snippets from the
-[Commodore 64 for MEGA65](https://github.com/MJoergen/C64MEGA65) for your own projects.
-nd join the
-[friendly MEGA65 community on Discord](https://discord.com/channels/719326990221574164/1177364456896999485).
+This is a limitation of the approach, not a bug: the copier writes sectors,
+and these disks are not made of ordinary sectors. **A flux-level floppy
+controller is on the roadmap for version 1.5**, and that is what it would
+take to copy them. Until then the LED goes red and the telemetry dump records
+exactly which rule was broken.
+
+Disks with *unformatted* tracks copy fine - those tracks are simply skipped,
+which is what "unformatted" means. About one image in six in the same sample
+has them, usually at the end.
+
+### Other known issues
+
+- **`Dump telemetry` does not untick itself** the way the other actions do.
+  It is a diagnostic tool for the developers and it will be removed from the
+  menu in version 1.0, so this is not going to be fixed. Untick it by hand to
+  dump again. **Note that it overwrites the mounted `.DSK` file** - that is
+  what it is for, but do not point it at an image you care about.
+- **Switching the drive off mid-write leaves a half-written track.** Closing
+  the write gate immediately is the correct thing to do, but the track that
+  was being written is lost. Let the operation finish.
+- Only the CPC **6128** is implemented. The 464 and 664 are on the roadmap.
+- No tape support yet; see `ROADMAP.md`.
+
+Some things that are the way they are on purpose
+-------------------------------------------------
+
+### Reading a physical disk needs no `.DSK` file, but copying one does
+
+`Read disk now` builds the image in memory from nothing. `COPY IMAGE TO
+DISK !!` is the opposite direction and needs a source, so the *other* drive
+has to have a real `.DSK` mounted - if `Internal floppy` is `Drive A:`, the
+copier reads from `Drive B:`.
+
+### The whole image is validated before the head moves
+
+The copier checks every track and every sector header of the source image
+before it opens the write gate once. A disk is either copied or left
+untouched; it is never left half-overwritten because the copier discovered a
+problem on track 30.
+
+### Write-back is per track, not per disk
+
+Only the tracks the CPC actually modified are written back, and a track that
+could not be read completely is never written back at all - the in-memory
+image does not hold its true contents, so writing it would punch holes in a
+disk that was fine.
+
+Building
+--------
+
+The project targets Vivado 2022.2 and builds for MEGA65 R6 with:
+
+```
+vivado -mode batch -source CORE/build_core.tcl
+```
+
+The build script checks timing after implementation and **fails the build on
+negative slack**, because Vivado will happily write a bitstream that does not
+meet timing and the resulting core fails erratically on real hardware.
+
+The QNICE Shell firmware is reassembled automatically at the start of
+synthesis (`CORE/m2m-rom/synth_pre.tcl`), which also regenerates the menu
+index constants from `CORE/vhdl/mega65.vhd`, so a menu change can never leave
+a stale index behind in the firmware.
+
+Credits
+-------
+
+See `AUTHORS`. In short: the Amstrad CPC hardware is Amstrad plc's, the
+MiSTer core is the MiSTer Development Team's, the framework is
+MiSTer2MEGA65's, and the MEGA65 port is mine. No Amstrad ROMs are included.
