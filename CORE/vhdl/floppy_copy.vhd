@@ -103,7 +103,7 @@ entity floppy_copy is
 
       -- Alimentacion de floppy_write en modo origen externo
       w_sec_i        : in  std_logic_vector(3 downto 0);  -- sector que esta escribiendo
-      w_off_i        : in  std_logic_vector(9 downto 0);  -- byte dentro del sector
+      w_off_i        : in  std_logic_vector(13 downto 0);  -- M4061: byte dentro del sector
       w_nsec_o       : out std_logic_vector(4 downto 0);
       w_id_c_o       : out std_logic_vector(7 downto 0);
       w_id_h_o       : out std_logic_vector(7 downto 0);
@@ -111,6 +111,10 @@ entity floppy_copy is
       w_id_n_o       : out std_logic_vector(7 downto 0);
       w_gap3_o       : out std_logic_vector(7 downto 0);   -- M4057
       w_noiam_o      : out std_logic;
+      w_len_o        : out std_logic_vector(13 downto 0);   -- M4061
+      w_dam_o        : out std_logic;
+      w_nodam_o      : out std_logic;
+      w_badcrc_o     : out std_logic;
       w_data_o       : out std_logic_vector(7 downto 0);
 
       -- Resultado
@@ -152,8 +156,8 @@ architecture beh of floppy_copy is
       CP_IDLE,
       CP_RD,                                             -- lector de un byte del buffer
       CP_SIG, CP_TRACKS, CP_SIDES, CP_TSZ_LO, CP_TSZ_HI, -- cabecera de disco
-      CP_V_TSZ, CP_V_SIDE, CP_V_NSEC, CP_V_SEC_H, CP_V_SEC_N, CP_V_NEXT,  -- validacion
-      CP_ARM, CP_P_NSEC, CP_P_GAP3, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_NEXT, CP_FEED, CP_SKIP,
+      CP_V_TSZ, CP_V_SIDE, CP_V_NSEC, CP_V_SEC_H, CP_V_SEC_N, CP_V_LL, CP_V_LH, CP_V_FIT, CP_V_NEXT,  -- validacion
+      CP_ARM, CP_P_NSEC, CP_P_GAP3, CP_P_C, CP_P_H, CP_P_R, CP_P_N, CP_P_S1, CP_P_S2, CP_P_LL, CP_P_LH, CP_P_NEXT, CP_P_FIT, CP_FEED, CP_SKIP,
       CP_DONE, CP_REFUSED);
 
    signal state    : t_state := CP_IDLE;
@@ -246,6 +250,7 @@ architecture beh of floppy_copy is
    constant C_TRK_BYTES : natural := 6250;   -- una vuelta DD
    constant C_PREAMBLE  : natural := 146;    -- GAP4A + sync + IAM + GAP1
    constant C_SEC_OVH   : natural := 62;     -- todo lo del sector menos datos y GAP3
+   constant C_GAP3_MIN  : natural := 8;      -- M4061: hueco minimo entre sectores
    signal p_gap3  : unsigned(7 downto 0) := to_unsigned(78, 8);
    signal p_noiam : std_logic := '0';
 
@@ -267,6 +272,35 @@ architecture beh of floppy_copy is
    constant C_GAP3_MAX : t_gap3max :=
       (0, 255, 255, 255, 255, 255, 255, 255, 207, 120, 51, 0, 0, 0, 0, 0, 0);
 
+   -- CPC4MEGA65 M4061: EL SECTOR DEJA DE MEDIR SIEMPRE 512 BYTES.
+   --
+   -- Con N variable, el desplazamiento de los datos de un sector dentro de la pista ya no es
+   -- 'sector x 512': hay que acumular. La tabla se construye en la pasada de preparacion, que
+   -- ya recorre la lista de sectores.
+   --
+   -- Y la longitud que se guarda es la REAL del EDSK, no '128 << N'. Ocean Dynamite declara
+   -- N=6 -8192 bytes- y guarda 6144: lo que hay que escribir es lo que hay. Escribir 8192
+   -- inventados seria menos fiel, no mas.
+   type t_len is array (0 to G_MAXSEC - 1) of unsigned(13 downto 0);
+   signal sec_len : t_len := (others => (others => '0'));
+   signal sec_off : t_len := (others => (others => '0'));
+
+   -- M4061: los tres indicadores de PROTECCION que hay que reproducir, por sector.
+   --   dam    ST2 bit 6 -> marca de datos borrados
+   --   nodam  ST2 bit 0 -> el sector no tiene campo de datos
+   --   badcrc ST1 bit 5 -> el CRC de datos del original esta mal, y hay que romperlo igual
+   signal sec_dam : std_logic_vector(G_MAXSEC - 1 downto 0) := (others => '0');
+   signal sec_nod : std_logic_vector(G_MAXSEC - 1 downto 0) := (others => '0');
+   signal sec_bcr : std_logic_vector(G_MAXSEC - 1 downto 0) := (others => '0');
+   signal p_st1   : std_logic_vector(7 downto 0) := (others => '0');
+   signal acc_off : unsigned(13 downto 0) := (others => '0');
+   signal acc_bud : unsigned(16 downto 0) := (others => '0');
+   signal v_bud   : unsigned(16 downto 0) := (others => '0');   -- presupuesto en VALIDACION
+   signal p_lenlo : std_logic_vector(7 downto 0) := (others => '0');
+   signal v_lenlo : std_logic_vector(7 downto 0) := (others => '0');
+   signal v_n     : std_logic_vector(7 downto 0) := (others => '0');
+   signal p_g_raw : unsigned(7 downto 0) := to_unsigned(78, 8);
+
 begin
 
    -- El indice llega del escritor en 4 bits y el array tiene 9 entradas: se acota aqui una sola
@@ -277,7 +311,7 @@ begin
    -- Solo es valido porque la validacion ya ha exigido que TODOS los sectores sean de 512: si
    -- no, harian falta desplazamientos acumulados y esto seria otra tabla.
    feed_addr <= t_off + to_unsigned(256, 18) +
-                to_unsigned(sec_ix * C_SECSZ, 18) +
+                resize(sec_off(sec_ix), 18) +     -- M4061: acumulada, ya no sector*512
                 resize(unsigned(w_off_i), 18);
 
    -- El buffer tiene un solo puerto por este lado: mientras se prepara una pista lo usa el
@@ -293,6 +327,10 @@ begin
    w_id_n_o   <= id_n(sec_ix);
    w_gap3_o   <= std_logic_vector(p_gap3);    -- M4057
    w_noiam_o  <= p_noiam;
+   w_len_o    <= std_logic_vector(sec_len(sec_ix));   -- M4061
+   w_dam_o    <= sec_dam(sec_ix);
+   w_nodam_o  <= sec_nod(sec_ix);
+   w_badcrc_o <= sec_bcr(sec_ix);
 
    -- hold_o es un NIVEL, no un evento: "esta pista todavia no esta preparada". Asi no hay
    -- carrera posible con el instante en que floppy_scan cambia de pista, y un fallo de
@@ -336,6 +374,7 @@ begin
       variable nxt_off : unsigned(18 downto 0);
       variable g_v     : natural range 0 to 255;   -- M4057
       variable n_v     : natural range 0 to 16;    -- M4060
+      variable l_v     : natural range 0 to 16383;   -- M4061
    begin
       if rising_edge(clk_i) then
          en_d   <= enable_i;
@@ -474,20 +513,9 @@ begin
                when CP_V_NSEC =>
                   if unsigned(rd_data) = 0 or unsigned(rd_data) > G_MAXSEC then
                      err_r <= x"4"; state <= CP_REFUSED;
-                  elsif to_integer(unsigned(rd_data)) * (C_SEC_OVH + C_SECSZ) >
-                        C_TRK_BYTES then
-                     -- M4060: ONCE sectores de 512 bytes no caben en una vuelta NI CON HUECO
-                     -- CERO: 11*574 = 6314 contra 6250. La validacion aceptaba hasta dieciseis y
-                     -- el desbordamiento salia luego, a mitad de escritura y sin aviso.
-                     --
-                     -- Se rechaza AQUI, en la validacion, y no al preparar la pista: alli ya se
-                     -- habrian escrito las pistas anteriores y el disquete quedaria a medias, que
-                     -- es justo lo que la validacion previa existe para evitar.
-                     --
-                     -- Reutiliza el codigo 7, libre desde M4051.
-                     err_r <= x"7"; state <= CP_REFUSED;
                   else
                      v_nsec  <= unsigned(rd_data(4 downto 0));
+                     v_bud   <= (others => '0');   -- M4061: presupuesto de esta pista
                      v_sec   <= 0;
                      addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_LIST + 1, 18);
                      rd_wait <= 2; ret <= CP_V_SEC_H; state <= CP_RD;
@@ -502,19 +530,59 @@ begin
                      rd_wait <= 2; ret <= CP_V_SEC_N; state <= CP_RD;
                   end if;
 
-               when CP_V_SEC_N =>
-                  -- N=2 son 512 bytes. Exigirlo aqui es lo que permite que el calculo de la
-                  -- direccion de datos sea una multiplicacion y no una tabla acumulada.
-                  if rd_data /= x"02" then
-                     err_r <= x"5"; state <= CP_REFUSED;
-                  elsif v_sec + 1 >= to_integer(v_nsec) then
-                     state <= CP_V_NEXT;
-                  else
-                     v_sec   <= v_sec + 1;
-                     addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_LIST + 1, 18) +
-                                to_unsigned((v_sec + 1) * 8, 18);
-                     rd_wait <= 2; ret <= CP_V_SEC_H; state <= CP_RD;
-                  end if;
+                when CP_V_SEC_N =>
+                   -- M4061: se aceptan N = 0..6, o sea de 128 a 8192 bytes. Antes se exigia N=2
+                   -- porque asi la direccion de los datos era una multiplicacion; ahora hay tabla
+                   -- de desplazamientos acumulados y ya no hace falta.
+                   --
+                   -- El tope en 6 esta MEDIDO, no elegido: N=7 aparece UNA sola vez en las 29
+                   -- imagenes de la coleccion, y es en una pista que no se puede reproducir de
+                   -- todas formas. Subirlo no compraria ni un fichero.
+                   if unsigned(rd_data) > 6 then
+                      err_r <= x"5"; state <= CP_REFUSED;
+                   else
+                      v_n     <= rd_data;
+                      addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_LIST + 6, 18) +
+                                 to_unsigned(v_sec * 8, 18);
+                      rd_wait <= 2; ret <= CP_V_LL; state <= CP_RD;
+                   end if;
+
+                when CP_V_LL =>
+                   v_lenlo <= rd_data;
+                   addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_LIST + 7, 18) +
+                              to_unsigned(v_sec * 8, 18);
+                   rd_wait <= 2; ret <= CP_V_LH; state <= CP_RD;
+
+                -- M4061: aqui se suma lo que ESTE sector va a costar en la pista. La longitud
+                -- que cuenta es la REAL del EDSK; si vale cero -.dsk estandar- se cae en
+                -- 128 << N, que es lo que el identificador promete.
+                when CP_V_LH =>
+                   l_v := to_integer(unsigned(rd_data)) * 256 + to_integer(unsigned(v_lenlo));
+                   if l_v = 0 then
+                      l_v := 128 * (2 ** to_integer(unsigned(v_n(2 downto 0))));
+                   end if;
+                   v_bud <= v_bud + to_unsigned(C_SEC_OVH + l_v, 17);
+                   if v_sec + 1 >= to_integer(v_nsec) then
+                      state <= CP_V_FIT;
+                   else
+                      v_sec   <= v_sec + 1;
+                      addr_r  <= v_off(17 downto 0) + to_unsigned(C_T_LIST + 1, 18) +
+                                 to_unsigned((v_sec + 1) * 8, 18);
+                      rd_wait <= 2; ret <= CP_V_SEC_H; state <= CP_RD;
+                   end if;
+
+                -- M4061: la pista tiene que caber en una vuelta CON AL MENOS un hueco minimo
+                -- entre sectores. Si ni asi entra, el disco no es reproducible y se rechaza
+                -- AQUI, en la validacion, antes de mover la cabeza: hacerlo luego dejaria el
+                -- disquete a medias, que es justo lo que la validacion previa evita.
+                when CP_V_FIT =>
+                   if v_bud + to_unsigned(to_integer(v_nsec) * C_GAP3_MIN, 17) >
+                      to_unsigned(C_TRK_BYTES, 17) then
+                      err_r <= x"7"; state <= CP_REFUSED;
+                   else
+                      state <= CP_V_NEXT;
+                   end if;
+
 
                when CP_V_NEXT =>
                   off_tab(to_integer(v_trk)) <= v_off(17 downto 0);
@@ -566,6 +634,8 @@ begin
 
                when CP_P_NSEC =>
                   p_nsec  <= unsigned(rd_data(4 downto 0));
+                   acc_off <= (others => '0');   -- M4061
+                   acc_bud <= (others => '0');
                   p_sec   <= 0;
                   addr_r  <= t_off + to_unsigned(C_T_GAP3, 18);   -- M4057
                   rd_wait <= 2; ret <= CP_P_GAP3; state <= CP_RD;
@@ -573,25 +643,16 @@ begin
                -- M4057: el hueco entre sectores de la pista de origen, y con el la decision de
                -- escribir con marca de indice o sin ella.
                when CP_P_GAP3 =>
-                  if unsigned(rd_data) = 0 then
-                     g_v := 78;              -- imagen sin GAP3 declarado: el del formato DATA
-                  else
-                     g_v := to_integer(unsigned(rd_data));
-                  end if;
-                  n_v := to_integer(p_nsec);
-                  -- M4060: la cascada. Primero se intenta CON preambulo, que es lo que hace un
-                  -- disco normal; si no cabe, SIN el; y solo si tampoco cabe asi se recorta el
-                  -- hueco. De este modo todo lo que ya se copiaba bien se sigue copiando igual y
-                  -- lo unico que cambia es el caso que antes se desbordaba en silencio.
-                  if C_PREAMBLE + n_v * (C_SEC_OVH + C_SECSZ + g_v) <= C_TRK_BYTES then
-                     p_noiam <= '0';
-                  else
-                     p_noiam <= '1';
-                     if n_v * (C_SEC_OVH + C_SECSZ + g_v) > C_TRK_BYTES then
-                        g_v := C_GAP3_MAX(n_v);
-                     end if;
-                  end if;
-                  p_gap3 <= to_unsigned(g_v, 8);
+                   -- M4061: aqui solo se guarda el hueco que declara la imagen. La decision de
+                   -- quitar el preambulo y de recortar el hueco se ha movido a CP_P_FIT, porque
+                   -- depende del total de bytes de la pista y ese no se conoce hasta haber leido
+                   -- las longitudes de TODOS los sectores. Antes se decidia aqui porque todos
+                   -- median 512 y bastaba una multiplicacion.
+                   if unsigned(rd_data) = 0 then
+                      p_gap3 <= to_unsigned(78, 8);    -- .dsk estandar: el del formato DATA
+                   else
+                      p_gap3 <= unsigned(rd_data);     -- el que declara la imagen
+                   end if;
                   addr_r  <= t_off + to_unsigned(C_T_LIST, 18);
                   rd_wait <= 2; ret <= CP_P_C; state <= CP_RD;
 
@@ -612,30 +673,101 @@ begin
 
                when CP_P_N =>
                   id_n(p_sec) <= rd_data;
-                  state <= CP_P_NEXT;
+                   addr_r  <= t_off + to_unsigned(C_T_LIST + 4, 18) + to_unsigned(p_sec * 8, 18);
+                   rd_wait <= 2; ret <= CP_P_S1; state <= CP_RD;
+
+                -- M4061: ST1 y ST2 del SectorInfo. Son los que dicen si este sector lleva
+                -- PROTECCION que hay que reproducir: marca de datos borrados, ausencia de campo
+                -- de datos, o un CRC roto a proposito.
+                when CP_P_S1 =>
+                   p_st1   <= rd_data;
+                   addr_r  <= t_off + to_unsigned(C_T_LIST + 5, 18) + to_unsigned(p_sec * 8, 18);
+                   rd_wait <= 2; ret <= CP_P_S2; state <= CP_RD;
+
+                when CP_P_S2 =>
+                   sec_dam(p_sec) <= rd_data(6);      -- ST2 bit 6: datos borrados
+                   sec_nod(p_sec) <= rd_data(0);      -- ST2 bit 0: sin campo de datos
+                   sec_bcr(p_sec) <= p_st1(5);        -- ST1 bit 5: CRC de datos malo
+                   addr_r  <= t_off + to_unsigned(C_T_LIST + 6, 18) + to_unsigned(p_sec * 8, 18);
+                   rd_wait <= 2; ret <= CP_P_LL; state <= CP_RD;
+
+                when CP_P_LL =>
+                   p_lenlo <= rd_data;
+                   addr_r  <= t_off + to_unsigned(C_T_LIST + 7, 18) + to_unsigned(p_sec * 8, 18);
+                   rd_wait <= 2; ret <= CP_P_LH; state <= CP_RD;
+
+                when CP_P_LH =>
+                   l_v := to_integer(unsigned(rd_data)) * 256 + to_integer(unsigned(p_lenlo));
+                   if l_v = 0 then
+                      l_v := 128 * (2 ** to_integer(unsigned(id_n(p_sec)(2 downto 0))));
+                   end if;
+                   sec_len(p_sec) <= to_unsigned(l_v, 14);
+                   sec_off(p_sec) <= acc_off;
+                   acc_off <= acc_off + to_unsigned(l_v, 14);
+                   acc_bud <= acc_bud + to_unsigned(C_SEC_OVH + l_v, 17);
+                   state   <= CP_P_NEXT;
 
                when CP_P_NEXT =>
                   -- El tope de G_MAXSEC lo garantiza ya la validacion, pero p_sec indexa cuatro
                   -- arrays: si alguna vez se leyera un numero de sectores mayor, aqui se saldria
                   -- de rango en vez de parar. La guarda cuesta un comparador.
                   if p_sec + 1 >= to_integer(p_nsec) or p_sec = G_MAXSEC - 1 then
-                     p_trk <= unsigned(track_i);
-                     p_ok  <= '1';
-                     -- M4036: el bit de sucio se borra AQUI, al empezar, no al terminar. Si se
-                     -- borrara al terminar, una escritura del CPC en esta misma pista durante
-                     -- los 200 ms que dura la grabacion volveria a marcarla sucia y el borrado
-                     -- posterior se la comeria: esos datos no llegarian nunca al disquete y
-                     -- nada lo indicaria. Borrando al empezar, esa escritura vuelve a marcar la
-                     -- pista y la recoge la pasada siguiente. Grabar una pista de mas es
-                     -- barato; perder una escritura en silencio, no.
-                     wrote_r <= '1';
-                     state <= CP_FEED;
+                      state <= CP_P_FIT;   -- M4061: decidir preambulo y hueco
                   else
+
                      p_sec   <= p_sec + 1;
                      addr_r  <= t_off + to_unsigned(C_T_LIST, 18) +
                                 to_unsigned((p_sec + 1) * 8, 18);
                      rd_wait <= 2; ret <= CP_P_C; state <= CP_RD;
                   end if;
+
+                -- CPC4MEGA65 M4061: AQUI SE DECIDE COMO CABE LA PISTA.
+                --
+                -- Estaba en CP_P_GAP3 y ha tenido que bajar hasta aqui: la decision depende del
+                -- TOTAL de bytes de la pista, y ese no se conoce hasta haber leido la longitud de
+                -- todos los sectores. Cuando todos median 512 bastaba una multiplicacion.
+                --
+                -- La cascada, en orden: con preambulo, que es lo que lleva un disco normal; sin
+                -- el, que es lo que llevan los de diez sectores; y solo si tampoco cabe asi, se
+                -- recorta el hueco de uno en uno hasta que entra.
+                --
+                -- Se recorta ITERANDO en vez de dividir. Una division por un valor variable es
+                -- cara en hardware y facil de equivocar; esto son 255 ciclos como mucho, cuatro
+                -- microsegundos, y se ejecuta una vez por pista con 200 ms por delante.
+                when CP_P_FIT =>
+                   if C_PREAMBLE + to_integer(acc_bud) +
+                      to_integer(p_nsec) * to_integer(p_gap3) <= C_TRK_BYTES then
+                      p_noiam <= '0';
+                      p_trk   <= unsigned(track_i);
+                      p_ok    <= '1';
+                      -- M4036: el bit de sucio se borra AQUI, al empezar, no al terminar. Si se
+                      -- borrara al terminar, una escritura del CPC en esta misma pista durante
+                      -- los 200 ms que dura la grabacion volveria a marcarla sucia y el borrado
+                      -- posterior se la comeria: esos datos no llegarian nunca al disquete y
+                      -- nada lo indicaria. Grabar una pista de mas es barato; perder una
+                      -- escritura en silencio, no.
+                      wrote_r <= '1';
+                      state   <= CP_FEED;
+                   elsif to_integer(acc_bud) +
+                         to_integer(p_nsec) * to_integer(p_gap3) <= C_TRK_BYTES then
+                      p_noiam <= '1';
+                      p_trk   <= unsigned(track_i);
+                      p_ok    <= '1';
+                      wrote_r <= '1';
+                      state   <= CP_FEED;
+                   elsif p_gap3 > to_unsigned(C_GAP3_MIN, 8) then
+                      p_noiam <= '1';
+                      p_gap3  <= p_gap3 - 1;
+                   else
+                      -- No cabe ni con el hueco minimo. La validacion deberia haberlo cazado
+                      -- (rechazo 7); si se llega aqui es que algo no cuadra, asi que se escribe
+                      -- con el minimo y la telemetria lo dira por el recuento de WGATE.
+                      p_noiam <= '1';
+                      p_trk   <= unsigned(track_i);
+                      p_ok    <= '1';
+                      wrote_r <= '1';
+                      state   <= CP_FEED;
+                   end if;
 
                -- Pista preparada: hold_o cae, floppy_scan arranca el escritor y este va pidiendo
                -- bytes por w_sec_i/w_off_i. Aqui solo se vigila el cambio de pista y el final.

@@ -103,8 +103,26 @@ entity floppy_write is
       --             No es un capricho: asi estan escritos esos discos de verdad.
       src_gap3_i     : in  std_logic_vector(7 downto 0) := (others => '0');
       src_noiam_i    : in  std_logic := '0';
+      -- CPC4MEGA65 M4061: el campo de datos deja de medir siempre 512 bytes, y deja de ser
+      -- siempre un campo de datos NORMAL con el CRC bien.
+      --
+      -- src_len_i    longitud REAL del campo de datos de este sector, en bytes. No es
+      --              '128 << N': un EDSK puede declarar N=6 (8192) y guardar 6144 reales, y lo
+      --              que hay que escribir es lo que hay, no lo que el identificador promete.
+      -- src_dam_i    '1' = marca de datos BORRADOS (0xF8 en vez de 0xFB). ST2 bit 6 del origen.
+      -- src_nodam_i  '1' = este sector NO TIENE campo de datos: solo identificador. ST2 bit 0.
+      -- src_badcrc_i '1' = el CRC de datos del original esta MAL, y hay que reproducir el fallo.
+      --              ST1 bit 5.
+      --
+      -- Los tres ultimos existen porque son PROTECCION ANTICOPIA: escribir marcas normales y
+      -- CRC correctos donde el original tiene marcas borradas y CRC rotos produce una copia que
+      -- parece perfecta y no arranca. Peor que negarse.
+      src_len_i      : in  std_logic_vector(13 downto 0) := (others => '0');
+      src_dam_i      : in  std_logic := '0';
+      src_nodam_i    : in  std_logic := '0';
+      src_badcrc_i   : in  std_logic := '0';
       src_sec_o      : out std_logic_vector(3 downto 0);   -- sector en curso: elige el ID
-      src_off_o      : out std_logic_vector(9 downto 0);   -- byte dentro del sector, 0..511
+      src_off_o      : out std_logic_vector(13 downto 0);  -- M4061: byte dentro del sector, 0..16383
 
       tlm_wgate_o    : out std_logic_vector(31 downto 0);  -- ciclos con WGATE abierto
       tlm_wdata_o    : out std_logic_vector(31 downto 0);  -- transiciones emitidas
@@ -140,7 +158,10 @@ entity floppy_write is
       -- tlm_refus_o porque ese cuenta los dos motivos y son diagnosticos opuestos: "protegido"
       -- se arregla moviendo la pestana, "sin disquete" metiendo uno. Con los testers de por
       -- medio, un rechazo sin causa es un informe que no sirve.
-      tlm_noidx_o    : out std_logic_vector(7 downto 0)
+      tlm_noidx_o    : out std_logic_vector(7 downto 0);
+      -- M4061: CRC de datos escritos MAL a proposito, para reproducir la proteccion del
+      -- original. Sin este contador no se distingue de un fallo nuestro.
+      tlm_badcrc_o   : out std_logic_vector(7 downto 0)
    );
 end floppy_write;
 
@@ -204,14 +225,19 @@ architecture beh of floppy_write is
    constant C_NOIDX_TMO : natural := G_CLK_HZ;                  -- 1 s
    signal   noidx_tmr   : natural range 0 to C_NOIDX_TMO := 0;
    signal   noidx_cnt   : unsigned(7 downto 0) := (others => '0');
+   signal   badcrc_cnt  : unsigned(7 downto 0) := (others => '0');   -- M4061
 
    constant C_GAP4A : natural := 80;
    constant C_SYNC  : natural := 12;
    constant C_GAP1  : natural := 50;
    constant C_GAP2  : natural := 22;
+   constant C_MARK_DEL : std_logic_vector(7 downto 0) := x"F8";   -- M4061: datos borrados
    constant C_GAP3  : natural := 78;    -- M4057: solo el POR DEFECTO, ver gap3_v
    signal   gap3_v  : natural range 1 to 256 := C_GAP3;
    constant C_SECSZ : natural := 512;
+   -- M4061: declarado DESPUES de C_SECSZ a proposito. En VHDL una declaracion no ve las que
+   -- vienen detras, y ponerlo antes daba 'c_secsz is not declared'.
+   signal   len_v   : natural range 1 to 16384 := C_SECSZ;
 
    type t_state is (W_IDLE, W_WAIT_IDX, W_GAP4A, W_SYNC1, W_IAM_A, W_IAM_M, W_GAP1,
                     W_SSYNC, W_IDAM_A, W_IDAM_M, W_ID_C, W_ID_H, W_ID_R, W_ID_N,
@@ -219,7 +245,10 @@ architecture beh of floppy_write is
                     W_GAP3, W_GAP4B, W_DONE, W_REFUSED);
    signal state    : t_state := W_IDLE;
 
-   signal cnt      : natural range 0 to 1023 := 0;      -- repeticiones dentro de un tramo
+   -- M4061: 0 to 16383, no 0 to 1023. Este contador mide TAMBIEN el campo de datos, que con
+   -- N=6 son 8192 bytes. Con el rango viejo, 'cnt <= src_len - 1' era una violacion de rango
+   -- silenciosa: ni aviso de sintesis ni nada, solo un campo de datos de longitud absurda.
+   signal cnt      : natural range 0 to 16383 := 0;     -- repeticiones dentro de un tramo
    signal sec_idx  : natural range 0 to 15 := 0;
 
    -- Motor de celdas: convierte un byte (o un patron literal) en 16 celdas cronometradas
@@ -283,7 +312,7 @@ architecture beh of floppy_write is
    -- M4034: desplazamiento dentro del sector para el modo origen externo. W_DATA ya lleva un
    -- contador (cnt) pero cuenta HACIA ATRAS, y la direccion del buffer tiene que ir hacia
    -- delante; se lleva aparte en vez de invertir el que ya funciona.
-   signal dat_off  : natural range 0 to 511 := 0;
+   signal dat_off  : natural range 0 to 16383 := 0;     -- M4061
 
    function f_crc16(crc_in : std_logic_vector(15 downto 0);
                     data   : std_logic_vector(7 downto 0)) return std_logic_vector is
@@ -323,6 +352,12 @@ begin
 
    -- M4057: en modo origen manda el hueco de la pista de origen; formateando normal, el del
    -- formato DATA de siempre. El rango arranca en 1 porque el estado hace 'gap3_v - 1'.
+   -- M4061: longitud del campo de datos. Formateando normal son los 512 del formato DATA;
+   -- copiando, la que diga el origen. El 'si es 0' cubre un .dsk estandar, donde ese campo no
+   -- existe y hay que caer en el tamano de siempre.
+   len_v <= to_integer(unsigned(src_len_i)) when (src_en_i = '1' and unsigned(src_len_i) /= 0)
+            else C_SECSZ;
+
    gap3_v <= to_integer(unsigned(src_gap3_i)) when (src_en_i = '1' and src_gap3_i /= x"00")
              else C_GAP3;
 
@@ -343,6 +378,7 @@ begin
    tlm_idxwr_o  <= std_logic_vector(idxwr_cnt);    -- M4039
    tlm_blind_o  <= std_logic_vector(blind_cnt);
    tlm_noidx_o  <= std_logic_vector(noidx_cnt);    -- M4052
+   tlm_badcrc_o <= std_logic_vector(badcrc_cnt);   -- M4061
 
    stats_proc : process (clk_i)
    begin
@@ -373,6 +409,12 @@ begin
                wg_max    <= (others => '0');
             elsif state = W_REFUSED then
                refus_lat <= '1';
+            end if;
+
+            -- M4061: un sector escrito con el CRC roto a proposito
+            if state_d /= W_DAT_CRC and state = W_DAT_CRC and
+               src_en_i = '1' and src_badcrc_i = '1' and badcrc_cnt /= x"FF" then
+               badcrc_cnt <= badcrc_cnt + 1;
             end if;
 
             if state_d /= W_REFUSED and state = W_REFUSED then
@@ -424,7 +466,7 @@ begin
    -- M4034: el modulo dice en todo momento QUE byte necesita. El que copia solo tiene que
    -- traducirlo a direccion del buffer de montaje y presentar el dato.
    src_sec_o <= std_logic_vector(to_unsigned(sec_idx, 4));
-   src_off_o <= std_logic_vector(to_unsigned(dat_off, 10));
+   src_off_o <= std_logic_vector(to_unsigned(dat_off, 14));   -- M4061
 
    ------------------------------------------------------------------------------------------
    -- Motor de celdas: saca 16 celdas a 2us cada una, con un pulso por celda a '1'
@@ -650,7 +692,15 @@ begin
                         when W_ID_CRC =>
                            load_val <= crc(15 downto 8); load_req <= '1';
                            crc <= crc(7 downto 0) & x"00";        -- deja el bajo arriba
-                           if cnt = 0 then cnt <= C_GAP2 - 1; state <= W_GAP2;
+                           if cnt = 0 then
+                              -- M4061: un sector sin marca de datos se acaba aqui: identificador
+                              -- y directo al hueco. No es un caso raro inventado, es como esta
+                              -- escrito el ultimo sector de la pista 1 de All Star Hits 2.
+                              if src_en_i = '1' and src_nodam_i = '1' then
+                                 cnt <= gap3_v - 1; state <= W_GAP3;
+                              else
+                                 cnt <= C_GAP2 - 1; state <= W_GAP2;
+                              end if;
                            else cnt <= cnt - 1; end if;
 
                         when W_GAP2 =>
@@ -673,9 +723,15 @@ begin
 
                         when W_DAM_M =>
                            dat_off <= 0;                        -- M4034
-                           load_val <= C_MARK_DAT; load_req <= '1';
-                           crc <= f_crc16(crc, C_MARK_DAT);
-                           cnt <= C_SECSZ - 1; state <= W_DATA;
+                           -- M4061: 0xF8 = datos BORRADOS, 0xFB = normales. Total UK lleva
+                           -- la marca borrada en TODOS los sectores de sus pistas protegidas.
+                           if src_en_i = '1' and src_dam_i = '1' then
+                              load_val <= C_MARK_DEL; crc <= f_crc16(crc, C_MARK_DEL);
+                           else
+                              load_val <= C_MARK_DAT; crc <= f_crc16(crc, C_MARK_DAT);
+                           end if;
+                           load_req <= '1';
+                           cnt <= len_v - 1; state <= W_DATA;   -- M4061
 
                         when W_DATA =>
                            -- M4034: en modo copia el byte sale del buffer de montaje.
@@ -686,14 +742,29 @@ begin
                               load_val <= C_FILLER; load_req <= '1';
                               crc <= f_crc16(crc, C_FILLER);
                            end if;
-                           if dat_off < 511 then
+                           if dat_off < len_v - 1 then      -- M4061
                               dat_off <= dat_off + 1;
                            end if;
                            if cnt = 0 then cnt <= 1; state <= W_DAT_CRC;
                            else cnt <= cnt - 1; end if;
 
                         when W_DAT_CRC =>
-                           load_val <= crc(15 downto 8); load_req <= '1';
+                           -- CPC4MEGA65 M4061: CRC DE DATOS MALO A PROPOSITO.
+                           --
+                           -- Las pistas protegidas de Ocean Dynamite llevan el CRC de datos roto
+                           -- (ST1 bit 5) y la proteccion lo COMPRUEBA: si la copia tiene el CRC
+                           -- bien, el juego sabe que no es el original. Reproducir el fallo es
+                           -- copiar fielmente; corregirlo es romper el disco.
+                           --
+                           -- Es el unico sitio del proyecto donde EXITO significa que algo falle,
+                           -- de ahi el contador propio: sin el, un CRC malo en el volcado es
+                           -- indistinguible de un fallo nuestro.
+                           if src_en_i = '1' and src_badcrc_i = '1' then
+                              load_val <= crc(15 downto 8) xor x"01";
+                           else
+                              load_val <= crc(15 downto 8);
+                           end if;
+                           load_req <= '1';
                            crc <= crc(7 downto 0) & x"00";
                            if cnt = 0 then cnt <= gap3_v - 1; state <= W_GAP3;
                            else cnt <= cnt - 1; end if;

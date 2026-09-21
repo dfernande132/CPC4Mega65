@@ -623,8 +623,13 @@ signal copy_w_id_n        : std_logic_vector(7 downto 0);
 signal copy_w_data        : std_logic_vector(7 downto 0);
    signal copy_w_gap3        : std_logic_vector(7 downto 0);   -- M4057
    signal copy_w_noiam       : std_logic;
+   signal copy_w_len         : std_logic_vector(13 downto 0);   -- M4061
+   signal copy_w_dam         : std_logic;
+   signal copy_w_nodam       : std_logic;
+   signal copy_w_badcrc      : std_logic;
+   signal fmt_badcrc         : std_logic_vector(7 downto 0);
 signal wr_sec             : std_logic_vector(3 downto 0);
-signal wr_off             : std_logic_vector(9 downto 0);
+signal wr_off             : std_logic_vector(13 downto 0);
 signal dsk_buf_addr       : std_logic_vector(17 downto 0);
 signal fmt_hold           : std_logic;
 signal scan_trk_last      : std_logic_vector(6 downto 0);
@@ -1828,6 +1833,10 @@ begin
          w_data_o    => copy_w_data,
          w_gap3_o    => copy_w_gap3,      -- M4057
          w_noiam_o   => copy_w_noiam,
+         w_len_o     => copy_w_len,       -- M4061
+         w_dam_o     => copy_w_dam,
+         w_nodam_o   => copy_w_nodam,
+         w_badcrc_o  => copy_w_badcrc,
 
          busy_o      => copy_busy,
          done_o      => copy_done,
@@ -2018,6 +2027,10 @@ begin
          src_data_i => copy_w_data,
          src_gap3_i => copy_w_gap3,       -- M4057
          src_noiam_i => copy_w_noiam,
+         src_len_i   => copy_w_len,       -- M4061
+         src_dam_i   => copy_w_dam,
+         src_nodam_i => copy_w_nodam,
+         src_badcrc_i => copy_w_badcrc,
          src_sec_o  => wr_sec,
          src_off_o  => wr_off,
 
@@ -2033,7 +2046,8 @@ begin
          tlm_wgmax_o  => fmt_wgmax,
          tlm_idxwr_o  => fmt_idxwr,       -- M4039
          tlm_blind_o  => fmt_blind,
-         tlm_noidx_o  => fmt_noidx        -- M4052
+         tlm_noidx_o  => fmt_noidx,
+         tlm_badcrc_o => fmt_badcrc       -- M4061
       ); -- i_floppy_write
 
    -- Lo que sale al LED durante el recorrido es el estado del contador por pista; al terminar,

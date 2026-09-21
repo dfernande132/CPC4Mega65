@@ -88,13 +88,13 @@ constant SCR_WELCOME : string :=
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
    -- M4060: para una RELEASE el numero de build no dice nada al usuario -cuenta compilaciones,
-   -- incluidas las que salieron mal- asi que la pantalla pasa a "v1.0 (M4060)". El build queda
+   -- incluidas las que salieron mal- asi que la pantalla pasa a "M4061 formatos raros". El build queda
    -- entre parentesis porque sigue siendo lo que identifica el codigo exacto en DECISIONES.md y
    -- en el CHANGELOG si alguien reporta algo.
    --
    -- Los .cor publicados son M4059 MAS este cambio de cadena: una linea de texto en la ROM, sin
    -- efecto funcional. Se anota aqui para que la equivalencia quede escrita y no supuesta.
-   "Status: v1.0 (M4060)\n\n" &
+   "Status: M4061 formatos raros\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
