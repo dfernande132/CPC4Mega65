@@ -31,20 +31,27 @@ Next
   the list after the prerelease because it removes the one step a user should
   never have had to take.
 
-- **Milestone 5 - A flux-level floppy controller. Targeted at version 1.5.**
-  This is the big one, and it is what unlocks **copy-protected disks**.
+- **Milestone 5 - Serve tracks straight from the disk. Targeted at version
+  1.5.** This is the big one, and what justifies it on its own is simple:
+  **the 26-second pre-read goes away.**
 
-  The current copier writes CPC DATA-format tracks: 9 sectors of 512 bytes
-  with the identifiers taken from the source image. That reproduces an
-  ordinary disk perfectly and cannot reproduce anything else. In a sample of
-  28 images from a real collection, 8 were refused - sectors declared as
-  8 KB, 16 sectors on a track, sector sizes of `N=0` or `N=3`. Those are
-  1980s copy protections and they are not made of ordinary sectors.
+  Today you tick `Read disk now`, the core reads all 40 tracks into an image
+  in memory, and the CPC uses that image. Reading on demand instead - the
+  drive answers the CPC as the sectors pass under the head - removes the
+  pre-read, and with it the whole scaffolding that exists only because there
+  is a copy in RAM: the write-back of modified tracks, the dirty-track map,
+  and the automatic read on insertion.
 
-  Reading and writing the raw flux, the way the Amiga core does with Paula,
-  removes the whole class of problem: the disk is copied as it is, not as we
-  think it should be. It also replaces the image-based `u765` for the
-  physical drive, which is why it is a milestone and not a patch.
+  It turns out this is less work than it sounds. The `u765` in the MiSTer
+  core is **already a rotational controller** - it times a byte every 32 µs,
+  models a 205 ms revolution, and waits for the requested sector to come
+  round - whose backend happens to be an image. So the command state machine,
+  which is the expensive part, stays; what changes is where the sector list,
+  the rotational position and the bytes come from.
+
+  Copying protected originals is an *extension* of this, not its reason: once
+  the flux is what we read and write, a disk is copied as it is rather than
+  as a controller described it.
 
 - **Milestone 6 - Tape (`.CDT`) and snapshots (`.SNA`).** The MiSTer core
   already carries `tzxplayer.vhd`. Snapshots pair naturally with tape because

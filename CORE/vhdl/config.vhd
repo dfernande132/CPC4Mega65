@@ -40,7 +40,7 @@ constant CHR_LINE_50 : string := CHR_LINE_10 & CHR_LINE_10 & CHR_LINE_10 & CHR_L
 --------------------------------------------------------------------------------------------------------------------
 
 -- define the amount of WHS array elements: between 1 and 16
-constant WHS_RECORDS   : natural := 2;
+constant WHS_RECORDS   : natural := 1;   -- M4059: solo la pantalla de bienvenida
 
 -- define the maximum amount of pages per WHS array element: between 1 and 256
 -- (this is necessary because Vivado does not support unconstrained arrays in a record)
@@ -87,7 +87,14 @@ constant SCR_WELCOME : string :=
    -- Convencion de numeracion: M<milestone><3 digitos>, la misma que QL4M65 (p.ej. "M1004").
    -- Las builds de M1 salieron como M1B00x porque se les pego la letra de las subfases
    -- M1A/M1B del plan; a partir de aqui se sigue la convencion buena.
-   "Status: Milestone 4D - Build M4056\n\n" &
+   -- M4060: para una RELEASE el numero de build no dice nada al usuario -cuenta compilaciones,
+   -- incluidas las que salieron mal- asi que la pantalla pasa a "v1.0 (M4059)". El build queda
+   -- entre parentesis porque sigue siendo lo que identifica el codigo exacto en DECISIONES.md y
+   -- en el CHANGELOG si alguien reporta algo.
+   --
+   -- Los .cor publicados son M4059 MAS este cambio de cadena: una linea de texto en la ROM, sin
+   -- efecto funcional. Se anota aqui para que la equivalencia quede escrita y no supuesta.
+   "Status: v1.0 (M4059)\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &
@@ -98,90 +105,41 @@ constant SCR_WELCOME : string :=
    " - Native CPC6128 (128k RAM)\n" &
    " - Keyboard\n" &
    " - Disk drives A: and B: (.DSK)\n" &
+   " - MEGA65 internal floppy as a\n" &
+   "   real CPC drive\n" &
    " - Joystick\n\n" &
 
    "    Press Space to continue.\n\n\n";
 
-constant HELP_1 : string :=
+-- M4059: AQUI HABIA TRES PANTALLAS DE AYUDA CON EL LOREM IPSUM DE LA PLANTILLA M2M.
+--
+-- Decian 'Demo Core for MEGA65 Version 1' y 'MiSTer port 2022 by YOU'. No eran alcanzables
+-- -ninguna linea del menu lleva OPTM_G_HELP- asi que ningun usuario las vio nunca, pero
+-- ocupaban ROM y eran una trampa para el dia que se anadiera un item de ayuda: habria
+-- aparecido texto de relleno en la cara del usuario sin que nadie hubiera tocado nada.
+--
+-- Para volver a tener ayuda: escribir las pantallas aqui, subir WHS_RECORDS, anadir su entrada
+-- al array WHS de abajo, y marcar la linea de menu correspondiente con OPTM_G_HELP.
 
-   "\n Demo Core for MEGA65 Version 1\n\n" &
-
-   " MiSTer port 2022 by YOU\n" &
-   " Powered by MiSTer2MEGA65\n\n\n" &
-
-   " Lorem ipsum dolor sit amet, consetetur\n" &
-   " sadipscing elitr, sed diam nonumy eirmod\n" &
-   " Mpor invidunt ut labore et dolore magna\n" &
-   " aliquyam erat, sed diam voluptua. At vero\n" &
-   " eos et accusam et justo duo.\n\n" &
-
-   " Dolores et ea rebum. Stet clita kasd gube\n" &
-   " gren, no sea takimata sanctus est Lorem ip\n" &
-   " Sed diam nonumy eirmod tempor invidunt ut\n" &
-   " labore et dolore magna aliquyam era\n\n" &
-
-   " Cursor right to learn more.       (1 of 3)\n" &
-   " Press Space to close the help screen.";
-
-constant HELP_2 : string :=
-
-   "\n Demo Core for MEGA65 Version 1\n\n" &
-
-   " XYZ ABCDEFGH:\n\n" &
-
-   " 1. ABCD EFGH\n" &
-   " 2. IJK LM NOPQ RSTUVWXYZ\n" &
-   " 3. 10 20 30 40 50\n\n" &
-
-   " a) Dolores et ea rebum\n" &
-   " b) Takimata sanctus est\n" &
-   " c) Tempor Invidunt ut\n" &
-   " d) Sed Diam Nonumy eirmod te\n" &
-   " e) Awesome\n\n" &
-
-   " Ut wisi enim ad minim veniam, quis nostru\n" &
-   " exerci tation ullamcorper suscipit lobor\n" &
-   " tis nisl ut aliquip ex ea commodo.\n\n" &
-
-   " Crsr left: Prev  Crsr right: Next (2 of 3)\n" &
-   " Press Space to close the help screen.";
-
-constant HELP_3 : string :=
-
-   "\n Help Screens\n\n" &
-
-   " You can have 255 screens per help topic.\n\n" &
-
-   " 15 topics overall.\n" &
-   " 1 menu item per topic.\n\n\n\n" &
-
-   " Cursor left to go back.           (3 of 3)\n" &
-   " Press Space to close the help screen.";
-
--- Concatenate all your Welcome and Help screens into one large string, so that during synthesis one large string ROM can be build.
-constant WHS_DATA : string := SCR_WELCOME & HELP_1 & HELP_2 & HELP_3;
+constant WHS_DATA : string := SCR_WELCOME;
 
 -- The WHS array needs the start address of each page. As a best practice: Just define some constants, that you can name for example
 -- just like you named the string constants and then add _START. Use the 'length attribute of VHDL to add up all previous strings
 -- so that the Synthesis tool can calculate the start addresses: Your first string starts at zero, your next one at the address which
 -- is equal to the length of the first one, your next one at the address which is equal to the sum of the previous ones, and so on.
 constant SCR_WELCOME_START : natural := 0;
-constant HELP_1_START      : natural := SCR_WELCOME'length;
-constant HELP_2_START      : natural := HELP_1_START + HELP_1'length;
-constant HELP_3_START      : natural := HELP_2_START + HELP_2'length;
 
 -- Fill the WHS array with page start addresses and the length of each page.
 -- Make sure that array element 0 is always your Welcome page. If you don't use a welcome page, fill everything with zeros.
+-- M4059: el indice va NOMBRADO ("0 =>") y no es estilo. Con WHS_RECORDS = 1 este array tiene un
+-- solo elemento, y en VHDL un agregado de UN elemento con asociacion posicional es ambiguo: el
+-- analizador no sabe si los parentesis exteriores son el agregado o un simple agrupamiento.
+-- Nombrando el indice desaparece la ambiguedad.
 constant WHS : WHS_RECORD_ARRAY_TYPE := (
    --- Welcome Screen
-   (page_count    => 1,
-    page_start    => (SCR_WELCOME_START,  0, 0),
-    page_length   => (SCR_WELCOME'length, 0, 0)),
-
-   --- Help pages
-   (page_count    => 3,
-    page_start    => (HELP_1_START,  HELP_2_START,  HELP_3_START),
-    page_length   => (HELP_1'length, HELP_2'length, HELP_3'length))
+   0 => (page_count    => 1,
+         page_start    => (SCR_WELCOME_START,  0, 0),
+         page_length   => (SCR_WELCOME'length, 0, 0))
 );
 
 --------------------------------------------------------------------------------------------------------------------
@@ -437,7 +395,7 @@ constant OPTM_ITEMS        : string :=
     " COPY IMAGE TO DISK !!\n" & -- 17  <- C_MENU_FLOPPY_COPY (DESTRUYE EL DISQUETE ENTERO)
     " WRITE BACK TO DISK !!\n" & -- 18 <- C_MENU_FLOPPY_WB
     " Auto write-back\n"     &   -- 19 <- C_MENU_FLOPPY_WBAUTO
-    " Dump telemetry\n"      &    -- 20  <- C_MENU_FLOPPY_DUMP (diagnostico)
+   "\n"                     &    -- 20  <- era " Dump telemetry". Ver OPTM_GROUPS.
    "\n"                     &    -- 21
    " Back to main menu\n"   &    -- 22  submenu: fin
    "\n"                     &    -- 23
@@ -512,7 +470,26 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_FLOPPY_CPY + OPTM_G_SINGLESEL,     -- 17 COPY IMAGE TO DISK !!
                                              OPTM_G_FLOPPY_WB  + OPTM_G_SINGLESEL,     -- 18 WRITE BACK TO DISK !!
                                              OPTM_G_FLOPPY_WBA + OPTM_G_SINGLESEL + OPTM_G_STDSEL,     -- 19 Auto write-back
-                                             OPTM_G_FLOPPY_DMP + OPTM_G_SINGLESEL,     -- 20 Dump telemetry
+                                             -- M4059: DUMP TELEMETRY, OCULTO PARA LA 1.0.
+                                             --
+                                             -- Es una herramienta NUESTRA y ademas SOBRESCRIBE el
+                                             -- .dsk montado: en un menu de usuario final es una
+                                             -- opcion de nombre inocente que se come un fichero.
+                                             --
+                                             -- La linea se deja VACIA y no seleccionable en vez de
+                                             -- borrarla, y eso no es pereza: quitarla desplazaria
+                                             -- el indice de las SIETE opciones siguientes, lo que
+                                             -- obliga a tocar mega65.vhd, el firmware, y sobre todo
+                                             -- a cambiar OPTM_SIZE - con lo que el m2mcfg que ya
+                                             -- tienen los testers dejaria de valer y perderian sus
+                                             -- ajustes. Asi el menu queda limpio y no se rompe nada.
+                                             --
+                                             -- REACTIVARLO para M5: devolver el texto a OPTM_ITEMS
+                                             -- (indice 20) y esta entrada a
+                                             --    OPTM_G_FLOPPY_DMP + OPTM_G_SINGLESEL
+                                             -- El RTL, el bit de estado y toda la telemetria siguen
+                                             -- exactamente donde estaban.
+                                             OPTM_G_TEXT,                              -- 20 (oculta)
                                              OPTM_G_LINE,                              -- 21 Line
                                              OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 22 Floppy submenu: END
 

@@ -8,12 +8,12 @@ based on the
 core (`T80pa` Z80 CPU, `ga40010` gate array, `UM6845R` CRTC, `YM2149` PSG,
 `i8255` PPI, `u765` uPD765 floppy controller).
 
-**Current status: Milestone 4 - prerelease for testers.** The CPC 6128 boots
+**Current status: version 1.0**, for MEGA65 R3 and R6. The CPC 6128 boots
 end-to-end on real MEGA65 hardware with working keyboard, video, sound,
-joystick and two `.DSK` disk drives. What makes this port unusual is the
-fourth milestone: **the MEGA65's internal 3.5" floppy drive works as a real
-CPC drive** - it reads genuine CPC disks, formats them, writes `.DSK` images
-onto physical disks, and writes changed tracks back. All of that is confirmed
+joystick and two `.DSK` disk drives. What makes this port unusual is that
+**the MEGA65's internal 3.5" floppy drive works as a real CPC drive** - it
+reads genuine CPC disks, formats them, writes `.DSK` images onto physical
+disks, and writes changed tracks back. All of that is confirmed
 on real hardware against a real CPC 6128: a disk formatted on the MEGA65 is
 read by the CPC, and a game copied on the MEGA65 boots on the CPC.
 
@@ -27,6 +27,11 @@ Feature overview
 - **Machine**: Amstrad CPC 6128 (128 KB RAM), PAL video, Locomotive-compatible
   keyboard mapping on the MEGA65 keyboard, and joystick support with
   swappable ports.
+- **ROMs are not included.** The core loads three mandatory 16 KB files from
+  `/cpc4mega65/` on the SD card - `os6128.rom`, `basic6128.rom` and
+  `amsdos.rom` - and does not boot without them. They are Amstrad firmware
+  and are not mine to distribute. If one is missing, the core names the file
+  it could not find rather than failing silently.
 - **Disk drives**: two virtual drives, `Drive A:` and `Drive B:`, each able to
   mount a `.DSK` or `.EDSK` image from the SD card - exactly like any other
   MiSTer2MEGA65 core.
@@ -83,24 +88,32 @@ have to remember to clear them before running the same one again.
 Known issues
 ------------
 
-### Copy-protected disks cannot be copied
+### Some disks are refused by the copier
 
-`COPY IMAGE TO DISK !!` writes CPC DATA-format tracks. Disks that use a
-non-standard geometry cannot be reproduced by it and the core refuses the
-image rather than writing half a disk. In a sample of 28 images from a real
-collection, 8 were refused, all of them genuine 1980s copy protection:
-sectors declared as 8 KB (`N=6`), 16 sectors on a track, sector sizes of
-`N=0` or `N=3`, and one image whose signature is neither `DSK` nor `EDSK`.
+`COPY IMAGE TO DISK !!` refuses an image it cannot reproduce exactly, rather
+than writing half a disk. In a sample of 26 images from a real collection, 8
+are refused today. They fall into three groups, and only the last one is a
+hard limit:
 
-This is a limitation of the approach, not a bug: the copier writes sectors,
-and these disks are not made of ordinary sectors. **A flux-level floppy
-controller is on the roadmap for version 1.5**, and that is what it would
-take to copy them. Until then the LED goes red and the telemetry dump records
-exactly which rule was broken.
+- **Unusual but ordinary formats.** Sector sizes other than 512 bytes, for
+  instance. These are a matter of the writer not yet being general enough,
+  and support for them is being added - a 10-sector, 200 KB Ocean disk
+  (R-Type) already copies.
+- **A damaged image.** One file has bit flips in its own signature, so it is
+  not recognised as a `.DSK` at all.
+- **Tracks that no `.DSK` can describe.** One disk has sixteen sector headers
+  sharing one physical data area, each declaring a different length - they
+  add up to more than twice what fits on a track. An EDSK records *what the
+  controller returned*, not *what is on the disk*, so no writer can rebuild
+  that track from the file. Copying the original disk itself would need a
+  flux-level controller, which is on the roadmap.
 
 Disks with *unformatted* tracks copy fine - those tracks are simply skipped,
-which is what "unformatted" means. About one image in six in the same sample
-has them, usually at the end.
+which is what "unformatted" means. About one image in six has them, usually
+at the end.
+
+When the copier refuses, the LED goes red and the telemetry dump records
+exactly which rule was broken.
 
 ### Other known issues
 
