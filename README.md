@@ -17,9 +17,13 @@ disks, and writes changed tracks back. All of that is confirmed
 on real hardware against a real CPC 6128: a disk formatted on the MEGA65 is
 read by the CPC, and a game copied on the MEGA65 boots on the CPC.
 
-See `.research/PORTING-PLAN.md` and `DECISIONES.md` (in the parent directory)
-for the full, detailed log of the whole investigation and every decision made
-along the way.
+See `.research/PORTING-PLAN.md` for the technical plan the port was built
+against, and `doc/m2m/exceptions.md` for every change made to the framework and
+to the MiSTer core, each with the reasoning behind it.
+
+*(Comments in the source refer to `DECISIONES.md`, a day-by-day development log
+kept outside this repository. It is not published; where a decision matters to
+someone reading the code, the reasoning is in the comment itself.)*
 
 Feature overview
 ----------------
@@ -176,5 +180,6 @@ Credits
 See `AUTHORS`. In short: the Amstrad CPC hardware is Amstrad plc's, the
 MiSTer core is the MiSTer Development Team's, the framework is
 MiSTer2MEGA65's, and the MEGA65 port is mine. No Amstrad ROMs are included.
+
 
 

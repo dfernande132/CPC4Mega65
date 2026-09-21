@@ -42,3 +42,6 @@ CORE/build_*.jou
 CORE/build_*.out
 CORE/.viv_tmp/
 CORE/m2m-rom/osm_const.asm
+
+# CPC4MEGA65: fichero temporal que deja el ensamblador QNICE al montar la ROM
+CORE/m2m-rom/__temp__.asm
