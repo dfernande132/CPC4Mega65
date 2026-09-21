@@ -333,3 +333,88 @@ QNICE
 -----
 
 No changes.
+
+### `M2M/rom/shell.asm`: rodaja de tiempo para el firmware del core en `HANDLE_IO` (Milestone 4, 2026-09-20)
+
+Etiqueta en el codigo: `M2M-EXCEPTION core-io-hook`.
+
+**Que se anade.** Una sola linea al principio de `HANDLE_IO`:
+
+    _HANDLE_IO_0    RSUB    HANDLE_CORE_IO, 1
+
+`HANDLE_CORE_IO` pasa a ser una llamada obligatoria al firmware del core, del mismo rango
+que `SUBMENU_SUMMARY` o `PREP_START`: el framework la llama, el core la implementa.
+
+**Por que hace falta.** El framework tiene ganchos para que el core reaccione a lo que hace
+el USUARIO (seleccionar una opcion, montar una imagen, abrir un submenu), pero ninguno para
+que reaccione a lo que hace el PROPIO CORE. Y eso es justo lo que pide una accion larga:
+
+  * el usuario marca "Read disk now" y el core se pone a leer los 40 tracks,
+  * 26 segundos despues el core termina,
+  * y el bit del menu **sigue puesto**, porque los bits del menu los escribe el Shell y el
+    core solo los lee.
+
+Sin este gancho hay que desmarcar a mano antes de poder volver a lanzar la misma accion, y
+mientras tanto el motor de la disquetera sigue girando: para el core, la operacion no ha
+terminado. Con acciones destructivas en el menu (FORMAT, COPY) eso no es solo incomodo.
+
+**Por que en `HANDLE_IO` y no en el bucle principal.** `HANDLE_IO` lo llama el bucle
+principal del Shell **y ademas todos los bucles de espera bloqueantes** que hay dentro del
+OSD, del explorador de ficheros y del montaje. Colgarse del bucle principal dejaria al core
+sin atender justo cuando el usuario esta con el menu abierto, que es cuando mas falta hace.
+Va al principio y despues de la deteccion de cambio de tarjeta, asi que `SD_CHANGED` esta
+fresco.
+
+**Contrato que cumple `HANDLE_CORE_IO`** (`CORE/m2m-rom/m2m-rom.asm`):
+
+  * preserva todos los registros (`SYSCALL(enter/leave)`),
+  * vuelve rapido: esto es multitarea cooperativa, no un hilo. La ruta comun -sin cambio de
+    estado y sin nada pendiente- sale sin tocar nada,
+  * puede cambiar la ventana RAMROM, que es lo que necesita para leer el dispositivo de
+    estado del core.
+
+**Idea y contrato tomados de AExp**, que tiene una excepcion equivalente. No es un invento
+nuestro: es un hueco real del framework que a otro port le hizo falta tapar igual.
+
+**Para upstream.** Esto deberia ser un gancho del framework, no un parche. Va a la lista de
+cosas que contarle a sy2002, junto con `flush-no-file` y con que el fichero de ajustes
+guarda los bits de ACCION igual que los de configuracion (ver `PREP_START` en
+`CORE/m2m-rom/m2m-rom.asm`): cualquier core con una accion destructiva en el menu la
+ejecuta al arrancar si se guardo marcada.
+
+### `M2M/vhdl/top_mega65-r3.vhd`: las mismas patillas de la disquetera que ya llevaba el R6 (Milestone 4, 2026-09-21)
+
+Etiqueta en el codigo: `CPC4MEGA65 M4056`.
+
+**Que se cambia.** Exactamente lo mismo que la excepcion del R6, un ano de builds despues:
+
+  * se quitan las diez ataduras a inactivo que trae la plantilla (`f_density_o <= '1'`,
+    `f_motora_o <= '1'` ... `f_wgate_o <= '1'`),
+  * y las quince senales `f_*` se conectan al port map de `CORE`.
+
+**Como aparecio.** La regla del proyecto era compilar **solo para R6** hasta la release, asi que
+cuando M4 cableo la disquetera se cableo un solo top. La primera sintesis de R3, ya para la
+prerelease, murio en seco:
+
+    ERROR: [Synth 8-9486] formal port 'f_index_i' has no actual or default value
+                          [M2M/vhdl/top_mega65-r3.vhd:878]
+
+Que fallara asi es lo correcto y conviene dejarlo dicho: los puertos de `CORE` **no tienen valor
+por defecto**, y por eso el error es de elaboracion. Si los tuvieran, el R3 habria compilado
+limpio, habria arrancado, y la disquetera no habria movido un dedo - y eso lo habria descubierto
+el tester, no nosotros.
+
+**Lo que no hizo falta tocar, y podia haber sido un problema serio.** El `MEGA65-R3.xdc` **ya
+declaraba las quince patillas**, y en las MISMAS posiciones de encapsulado que el del R6 (M2 para
+`F_INDEX`, M5 para `F_MOTEA`, P1 para `F_RDATA1`, N2 para `F_TRCK0`, N3 para `F_WGATE`...). O sea
+que el conector de disquetera es el mismo en las dos placas y no hubo que deducir ni inventar
+nada del hardware. Si hubieran diferido, esto no se arregla leyendo codigo: haria falta el
+esquematico de la placa.
+
+**Estado.** Compila con WNS +0,203 ns y WHS **+0,003 ns**. El WNS es holgado; el WHS son TRES
+picosegundos, el margen mas estrecho de todo el proyecto. Es hold, no setup, asi que no se
+arregla bajando frecuencia: o ruto bien o no. Vivado dice que si. Queda anotado porque si el
+tester de R3 reporta algo intermitente, este es el PRIMER sitio donde mirar, no el ultimo.
+
+**Sin probar en hardware.** Todo lo que esta verificado contra un CPC 6128 real se verifico en un
+R6. En R3 la disquetera no la ha movido nadie todavia.

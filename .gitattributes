@@ -1,0 +1,12 @@
+# CPC4MEGA65: los scripts de shell tienen que quedarse con finales de linea LF.
+#
+# No es cosmetico. synth_pre.tcl lanza CORE/m2m-rom/make_rom.sh BAJO WSL en cada sintesis, y
+# bash rechaza un script con CRLF con el error "bash\r": el firmware QNICE no se reensambla, la
+# build sigue adelante, y el core sale con una m2m-rom.rom vieja o vacia. Ya nos paso.
+#
+# Con core.autocrlf=true en Windows -que es como esta esta maquina- git convierte a CRLF al
+# sacar los ficheros, asi que sin esta regla el .sh se rompe solo en cuanto alguien clona.
+#
+# La regla se deja ESTRECHA a proposito. Un "* text=auto" normalizaria el repositorio ENTERO en
+# un commit, que es justo el accidente que se quiere evitar.
+*.sh text eol=lf

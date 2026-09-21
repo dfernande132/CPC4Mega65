@@ -1,3 +1,7 @@
 [submodule "QNICE"]
 	path = M2M/QNICE
 	url = https://github.com/sy2002/QNICE-FPGA
+[submodule "CORE/Amstrad_MiSTer"]
+	path = CORE/Amstrad_MiSTer
+	url = https://github.com/dfernande132/Amstrad_MiSTer
+	branch = cpc4mega65

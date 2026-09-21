@@ -461,16 +461,8 @@ begin
    eth_reset_o   <= '1';
    eth_txd_o     <= (others => '0');
    eth_txen_o    <= '0';
-   f_density_o   <= '1';
-   f_motora_o    <= '1';
-   f_motorb_o    <= '1';
-   f_selecta_o   <= '1';
-   f_selectb_o   <= '1';
-   f_side1_o     <= '1';
-   f_stepdir_o   <= '1';
-   f_step_o      <= '1';
-   f_wdata_o     <= '1';
-   f_wgate_o     <= '1';
+   -- CPC4MEGA65 M4056: las diez lineas de la disquetera YA NO se atan a inactivo aqui.
+   -- Las gobierna el core, igual que en top_mega65-r6.vhd. Ver el port map de CORE.
    led_o         <= '0'; -- Off
    p1lo_io       <= (others => 'Z');
    p1hi_io       <= (others => 'Z');
@@ -702,6 +694,33 @@ begin
 
          -- Flip joystick ports
          qnice_flip_joyports_o   => qnice_flip_joyports,
+
+         -- CPC4MEGA65 M4056: disquetera fisica interna (interfaz Shugart de la placa).
+         --
+         -- Identico al de top_mega65-r6.vhd, y no por copiar: el XDC del R3 ya declaraba estos
+         -- pines en las MISMAS posiciones de encapsulado que el del R6 (M2, M5, P1, N2, N3...),
+         -- asi que el conector es el mismo y el cableado tambien. Lo unico que faltaba era
+         -- esto, porque M4 se compilo solo para R6 hasta la prerelease.
+         --
+         -- Sin esto la sintesis del R3 falla en seco -'formal port f_index_i has no actual or
+         -- default value'- porque los puertos de CORE no tienen valor por defecto. Que falle
+         -- ruidosamente es lo correcto: la alternativa habria sido un R3 que compila y no
+         -- mueve la disquetera.
+         f_density_o             => f_density_o,
+         f_motora_o              => f_motora_o,
+         f_motorb_o              => f_motorb_o,
+         f_selecta_o             => f_selecta_o,
+         f_selectb_o             => f_selectb_o,
+         f_side1_o               => f_side1_o,
+         f_stepdir_o             => f_stepdir_o,
+         f_step_o                => f_step_o,
+         f_wdata_o               => f_wdata_o,
+         f_wgate_o               => f_wgate_o,
+         f_index_i               => f_index_i,
+         f_track0_i              => f_track0_i,
+         f_writeprotect_i        => f_writeprotect_i,
+         f_diskchanged_i         => f_diskchanged_i,
+         f_rdata_i               => f_rdata_i,
 
          -- On-Screen-Menu selections (in QNICE clock domain)
          qnice_osm_control_i     => qnice_osm_control_m,

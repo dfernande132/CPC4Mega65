@@ -27,9 +27,18 @@ M2M/video_filters/*.out
 CORE/build_*.log
 CORE/build_*.jou
 
-# CPC4MEGA65: el core MiSTer original es su propio repo git (clon de
-# MiSTer-devel/Amstrad_MiSTer) con nuestras modificaciones documentadas en
-# doc/m2m/exceptions.md - se commitea por separado dentro de esa carpeta.
-# Mientras el proyecto sea local no se engancha aqui como submodulo: cuando toque publicar,
-# se hara igual que en QL4M65 (fork propio + submodulo git de verdad).
-CORE/Amstrad_MiSTer/
+# CPC4MEGA65 (M4054): el core MiSTer original YA es un submodulo de verdad, apuntando al fork
+# https://github.com/dfernande132/Amstrad_MiSTer rama cpc4mega65. Ver .gitmodules.
+# MiSTer-devel/Amstrad_MiSTer con nuestras modificaciones, documentadas una a una en
+# doc/m2m/exceptions.md. Se commitea DENTRO de esa carpeta y aqui solo se guarda el puntero.
+
+# CPC4MEGA65 (M4053, preparando la prerelease): huecos que dejaba el .gitignore de arriba.
+#
+#   *.out          lanzamos Vivado redirigiendo la salida a build_<algo>.out, no solo el -log
+#   .viv_tmp/      el -tempDir de Vivado, que si no acaba dentro del repo
+#   osm_const.asm  lo GENERA make_rom.sh desde mega65.vhd. Igual que globals.asm y los dos
+#                  shell_*.asm de arriba: si se commitea, un indice de menu viejo puede
+#                  sobrevivir a un cambio del menu, que es justo lo que se queria evitar.
+CORE/build_*.out
+CORE/.viv_tmp/
+CORE/m2m-rom/osm_const.asm
