@@ -172,7 +172,12 @@ meet timing and the resulting core fails erratically on real hardware.
 The QNICE Shell firmware is reassembled automatically at the start of
 synthesis (`CORE/m2m-rom/synth_pre.tcl`), which also regenerates the menu
 index constants from `CORE/vhdl/mega65.vhd`, so a menu change can never leave
-a stale index behind in the firmware.
+a stale index behind in the firmware. If the QNICE toolchain is missing - almost always a
+clone without `git submodule update --init --recursive` - **the build stops**
+instead of falling back on the `m2m-rom.rom` that is already in the tree. That
+matters more than it sounds: a stale firmware passes timing cleanly, because
+the contents of an initialised BRAM never touch the critical path, and the only
+symptom is menu lines that do somebody else's job.
 
 Credits
 -------

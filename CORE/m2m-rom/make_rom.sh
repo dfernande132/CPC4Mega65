@@ -17,7 +17,12 @@ if [ ! -f ../../M2M/QNICE/assembler/qasm ]; then
     echo "       cd ../../M2M/QNICE/tools"
     echo "       ./make-toolchain.sh"
     echo ""
-    exit
+    # CPC4MEGA65: "exit" a secas devuelve el estado del ULTIMO comando ejecutado -el echo
+    # de aqui arriba-, o sea 0. El hook de Vivado daba la build por buena con el firmware
+    # sin regenerar, se quedaba el m2m-rom.rom viejo del arbol, y con el se quedaba el
+    # osm_const.asm de otra version: el mapa de indices del menu. Con FORMAT WHOLE DISK
+    # en ese menu, un indice corrido no es un detalle estetico.
+    exit 1
 fi;
 
 ##############################################################################
