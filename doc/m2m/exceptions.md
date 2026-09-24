@@ -418,3 +418,12 @@ tester de R3 reporta algo intermitente, este es el PRIMER sitio donde mirar, no 
 
 **Sin probar en hardware.** Todo lo que esta verificado contra un CPC 6128 real se verifico en un
 R6. En R3 la disquetera no la ha movido nadie todavia.
+
+### `VERSIONS.md` -> `doc/m2m/VERSIONS.md`: movido de sitio, no modificado (publicacion de la 1.0, 2026-09-24)
+
+Es el historial de versiones DEL FRAMEWORK, y venia en la raiz de la plantilla. Al
+publicar el repositorio quedaba en la raiz junto a nuestro `CHANGELOG.md`, empezando por
+"Version 2.0.1 - February 22, 2025" y hablando de un issue del core del C64: cualquiera
+lo leia como el historial de versiones del CPC. El contenido no se toca ni una coma; solo
+cambia a la carpeta donde ya estan los demas documentos del framework, que es donde el
+lector ya sabe de quien es lo que esta leyendo.
