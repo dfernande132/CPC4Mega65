@@ -18,6 +18,10 @@ physical disks, and writes changed tracks back. This has been confirmed on real
 hardware against a real CPC 6128: a disk formatted on the MEGA65 is read by the
 CPC, and a game copied on the MEGA65 boots on the CPC.
 
+If you have never used a CPC, `doc/GETTING-STARTED.md` walks through the whole
+thing from the SD card up and assumes exactly that.
+`doc/MANUAL-floppy.md` is the technical manual for the floppy drive.
+
 See `.research/PORTING-PLAN.md` for the technical plan the port was built
 against, and `doc/m2m/exceptions.md` for every change made to the framework and
 to the MiSTer core, each with the reasoning behind it.
@@ -139,10 +143,6 @@ exactly which rule was broken.
 
 ### Other known issues
 
-- **`Dump telemetry` is no longer in the menu.** It overwrites the mounted
-  `.DSK` file, which is what it is for, but that is not something an end-user
-  menu should offer. The mechanism is still in the core and can be put back
-  with a one-line change when a disk problem needs diagnosing at a distance.
 - **The CPC runs at its authentic 50.08 Hz while HDMI outputs exactly 50.000
   Hz**, so one frame is dropped every 12.5 seconds. Fixing this is the first
   item in version 1.1.
@@ -208,7 +208,7 @@ the MEGA65 port is mine. **No Amstrad ROMs are included.**
 
 Particular thanks to **sy2002** for MiSTer2MEGA65 and for his help along the
 way. The framework is what makes a port like this the work of weeks rather than
-years - the QNICE Shell, the on-screen menu, the HDMI pipeline and the SD card
+months - the QNICE Shell, the on-screen menu, the HDMI pipeline and the SD card
 handling are all his and his team's, and none of it had to be invented here. He
 also took the time to answer the questions raised upstream during this port,
 both on how a menu item that performs an *action* should behave and on where
