@@ -18,10 +18,6 @@ physical disks, and writes changed tracks back. This has been confirmed on real
 hardware against a real CPC 6128: a disk formatted on the MEGA65 is read by the
 CPC, and a game copied on the MEGA65 boots on the CPC.
 
-If you have never used a CPC, `doc/GETTING-STARTED.md` walks through the whole
-thing from the SD card up and assumes exactly that.
-`doc/MANUAL-floppy.md` is the technical manual for the floppy drive.
-
 See `.research/PORTING-PLAN.md` for the technical plan the port was built
 against, and `doc/m2m/exceptions.md` for every change made to the framework and
 to the MiSTer core, each with the reasoning behind it.
@@ -47,6 +43,25 @@ free`. No `.DSK` file is involved. (The `Syntax error` lines above it are the
 `|` character being typed wrong; on a CPC it is SHIFT + @, which is exactly the
 sort of thing `GETTING-STARTED.md` exists to tell you.) On the right, CP/M Plus
 booting off a real disk - `61K TPA, 2 disc drives`.
+
+Documentation
+-------------
+
+Two guides come with the core. They live in `doc/` here, and are attached to
+the release as well so you can keep them next to the core on the SD card:
+
+- **[`doc/GETTING-STARTED.md`](doc/GETTING-STARTED.md)** - read this one first
+  if you have never used an Amstrad CPC. It assumes you are arriving from a
+  Commodore machine and says so out loud: how `CAT` is not `LOAD"$",8`, why the
+  closing quote nobody types is optional, and where the `|` character lives on
+  the MEGA65 keyboard (SHIFT + @) - which you need for every single disk
+  command. **It is also where the download links are**: the three ROM files the
+  core will not boot without, and where to find `.DSK` images and the CP/M
+  disks.
+- **[`doc/MANUAL-floppy.md`](doc/MANUAL-floppy.md)** - the technical manual for
+  the real floppy drive: which disks it will accept (720K DD), what format gets
+  written, what each menu action does, and what to do when the drive refuses
+  and flashes red.
 
 Feature overview
 ----------------
