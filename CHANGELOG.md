@@ -1,7 +1,7 @@
 CPC4MEGA65 Changelog
 ====================
 
-Version 1.0 (build M4059)
+Version 1.0 (build M4061)
 -------------------------
 
 First release. An Amstrad CPC 6128 for the MEGA65, for **R3 and R6**.
