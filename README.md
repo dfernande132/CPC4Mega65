@@ -22,10 +22,6 @@ See `.research/PORTING-PLAN.md` for the technical plan the port was built
 against, and `doc/m2m/exceptions.md` for every change made to the framework and
 to the MiSTer core, each with the reasoning behind it.
 
-*(Comments in the source refer to `DECISIONES.md`, a day-by-day development log
-kept outside this repository. It is not published; where a decision matters to
-someone reading the code, the reasoning is in the comment itself.)*
-
 Screenshots
 -----------
 
@@ -166,6 +162,11 @@ exactly which rule was broken.
   being written is lost. Let the operation finish.
 - Only the CPC **6128** is implemented. The 464 and 664 are on the roadmap.
 - No tape support yet; see `ROADMAP.md`.
+- **Comments in the source refer to `DECISIONES.md`, which is not here.** It is
+  a day-by-day development log kept outside this repository and deliberately
+  not published. Where a decision matters to someone reading the code, the
+  reasoning is in the comment itself, so nothing is hidden behind that name -
+  but the dangling reference is real and you will run into it.
 
 Intentional design choices
 --------------------------
