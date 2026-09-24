@@ -210,19 +210,23 @@ ends in about a second instead of twenty-six.
 10. If something goes wrong
 ---------------------------
 
-There is a diagnostic dump. It records what the floppy subsystem actually
-saw - which tracks read, how many sectors each one gave, CRC errors, how long
-the write gate was open, and exactly why an operation was refused.
+Three things identify most problems on their own:
 
-1. Mount a `.DSK` **you do not care about** (the dump overwrites it - that is
-   how it gets the data out).
-2. Tick **`Dump telemetry`**.
-3. Send me that `.DSK` file.
+1. **Which MEGA65 you have**, R3 or R6.
+2. **What the LED did.** The colour code above is deliberately blunt, but
+   green, amber and red already separate "it worked", "it finished badly" and
+   "the drive refused" - and those are three completely different kinds of
+   problem to chase.
+3. **Which disk**, if a particular one is involved. If it is a `.DSK` file you
+   can send, better still: most copier refusals are properties of the file
+   rather than of your hardware, so they can be reproduced here without the
+   disk ever leaving your house.
 
-Two caveats: it overwrites the mounted image, so never point it at something
-you want to keep; and unlike the other options it does not untick itself, so
-clear it by hand before dumping again. It is a developer tool and it is being
-removed from the menu in version 1.0.
-
-Please also say **which MEGA65 you have (R3 or R6)** and, if a specific disk
-is involved, which one.
+There is also a diagnostic dump inside the core. It records what the floppy
+subsystem actually saw - which tracks read, how many sectors each one gave,
+CRC errors, how long the write gate was open, and exactly which rule refused
+an operation. **It is not in the menu in version 1.0**: the way it gets the
+data out is by overwriting the mounted `.DSK` file, which is not something an
+end-user menu should be offering. The mechanism is still in the core and comes
+back with a one-line change, so if a problem needs it, say so and you will get
+a build that has it.
