@@ -13,10 +13,10 @@ CPC4MEGA65 / CoreCPC:
 
   CPC4MEGA65 is an Amstrad CPC 6128 core for the MEGA65, ported on top of
   the MiSTer2MEGA65 framework and built on the MiSTer-devel Amstrad_MiSTer
-  core. The MEGA65 port itself (this repository), including the
-  MiSTer2MEGA65 integration, the real 3.5" floppy drive subsystem (MFM
-  data separator, track formatter, disk copier and write-back) and all
-  MEGA65-specific work, was done by Jose Daniel Fernandez Santos
+  core. The MEGA65-specific work in this repository - the integration
+  with MiSTer2MEGA65, the real 3.5" floppy drive subsystem (MFM
+  data separator, track formatter, disk copier and write-back) and the
+  rest of the MEGA65 port - was done by Jose Daniel Fernandez Santos
   (dfsantos), with the assistance of Claude Code (Anthropic) as an AI
   pair-programming tool throughout the design, debugging and
   documentation work.
