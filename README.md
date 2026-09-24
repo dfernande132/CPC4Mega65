@@ -205,3 +205,12 @@ Credits
 See `AUTHORS`. In short: the Amstrad CPC hardware is Amstrad plc's, the MiSTer
 core is the MiSTer Development Team's, the framework is MiSTer2MEGA65's, and
 the MEGA65 port is mine. **No Amstrad ROMs are included.**
+
+Particular thanks to **sy2002** for MiSTer2MEGA65 and for his help along the
+way. The framework is what makes a port like this the work of weeks rather than
+years - the QNICE Shell, the on-screen menu, the HDMI pipeline and the SD card
+handling are all his and his team's, and none of it had to be invented here. He
+also took the time to answer the questions raised upstream during this port,
+both on how a menu item that performs an *action* should behave and on where
+physical floppy drive work had already been done in the C64 core. That guidance
+is shaping where this port goes next.
