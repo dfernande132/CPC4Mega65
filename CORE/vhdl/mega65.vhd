@@ -488,12 +488,16 @@ begin
 
 
    -- MMCME2_ADV clock generators:
-   --   CPC4MEGA65: clk_sys del core original es 64MHz (ver globals.vhd/CORE_CLK_SPEED) -
-   --   @TODO M1B: ajustar clk.vhd para generar 64MHz reales desde los 100MHz de la placa
+   --   CPC4MEGA65: clk_sys del core original es 64MHz (ver globals.vhd/CORE_CLK_SPEED).
+   --   Hecho en M1B: clk.vhd los genera exactos desde los 100MHz de la placa, x8 = 800MHz
+   --   de VCO y /12.5. No es aproximado, y de esa exactitud depende mas de lo que parece:
+   --   el tiempo de celda MFM de la disquetera fisica se cuenta en ciclos de este reloj
+   --   (floppy_write.vhd, C_CELL_CYC = 128 = 2 us) contra un eje que gira a 300 RPM de
+   --   verdad y que no sabe nada de este MMCM.
    clk_gen : entity work.clk
       port map (
          sys_clk_i         => clk_i,           -- expects 100 MHz
-         main_clk_o        => main_clk,        -- CORE's clock (@TODO M1B: 64 MHz, ver arriba)
+         main_clk_o        => main_clk,        -- CORE's clock, 64 MHz
          main_rst_o        => main_rst         -- CORE's reset, synchronized
       ); -- clk_gen
 

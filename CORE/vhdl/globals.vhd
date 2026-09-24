@@ -226,7 +226,22 @@ constant C_CRTROMS_AUTO          : crtrom_buf_array := (
 -- that you are porting: sys/sys_top.v
 ----------------------------------------------------------------------------------------------------------
 
--- Sample values from the C64: @TODO: Adjust to your needs
+-- CPC4MEGA65: OJO, ESTOS VALORES SON LOS DEL C64 Y NO SE PUEDEN "ajustar" copiando.
+--
+-- La plantilla dice aqui arriba que hay que traerse los valores correctos del core de
+-- MiSTer que se esta portando (sys/sys_top.v). En este caso NO HAY NADA QUE TRAER:
+-- Amstrad_MiSTer no define ningun filtro de audio - cero coincidencias de flt_rate,
+-- audio_flt o cx0 en todo el submodulo. La instruccion de la plantilla no se puede
+-- seguir porque el core de origen no participa de este mecanismo.
+--
+-- Y esto SI es alcanzable por el usuario: av_pipeline.vhd:322-330 recibe estas
+-- constantes y el menu tiene "Audio improvements". Marcarla aplica al AY-3-8912 del CPC
+-- un paso bajo parametrizado para la etapa analogica del C64. No rompe nada -es un paso
+-- bajo, no distorsiona- pero tampoco modela lo que dice modelar.
+--
+-- Hacerlo bien es diseño de filtro, no transcripcion: hace falta la respuesta real de la
+-- etapa de salida del 6128 y derivar la IIR. Esta en el backlog y documentado como
+-- limitacion conocida en el README. Mientras tanto se deja tal cual, a la vista.
 constant audio_flt_rate : std_logic_vector(31 downto 0) := std_logic_vector(to_signed(7056000, 32));
 constant audio_cx       : std_logic_vector(39 downto 0) := std_logic_vector(to_signed(4258969, 40));
 constant audio_cx0      : std_logic_vector( 7 downto 0) := std_logic_vector(to_signed(3, 8));

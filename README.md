@@ -160,6 +160,12 @@ exactly which rule was broken.
 - **Switching the drive off mid-write leaves a half-written track.** Closing
   the write gate immediately is the correct thing to do, but the track that was
   being written is lost. Let the operation finish.
+- **`Audio improvements` applies a filter that was tuned for a C64**, not for a
+  CPC. The MiSTer Amstrad core defines no audio filter at all, so there were no
+  correct values to copy from it and the framework's C64 defaults are still in
+  place. It is a low-pass, so it does not damage the sound - but it does not
+  model the 6128's output stage either. Doing it properly means deriving the
+  coefficients from the real hardware, which is on the roadmap.
 - Only the CPC **6128** is implemented. The 464 and 664 are on the roadmap.
 - No tape support yet; see `ROADMAP.md`.
 - **Comments in the source refer to `DECISIONES.md`, which is not here.** It is
@@ -195,11 +201,25 @@ was fine.
 Building
 --------
 
-The project targets Vivado 2022.2 and builds for MEGA65 R6 with:
+The project targets Vivado 2022.2. There is one build script per board:
 
 ```bash
 vivado -mode batch -source CORE/build_core.tcl
 ```
+
+```bash
+vivado -mode batch -source CORE/build_core_r3.tcl
+```
+
+The first builds for R6, the second for R3. They differ in exactly one line -
+which `.xpr` they open - because the R3 and R6 projects are otherwise the same
+sources with different top-level entities and constraints.
+
+**Both scripts currently contain absolute paths to the machine they were
+written on**, so you will have to edit the `E:/CPC4MEGA65/` prefixes before
+either one will run anywhere else. That is a real defect and it is on the list
+for 1.1; it is mentioned here rather than left for you to discover on the first
+line of output.
 
 The build script checks timing after implementation and **fails the build on
 negative slack**. Vivado will happily write a bitstream that does not meet

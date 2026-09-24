@@ -56,6 +56,9 @@ CPC 6128 in both directions.
 
 - Only the CPC **6128**. No tape yet. The 464, the 664 and tape are on the
   roadmap.
+- **`Audio improvements` uses the framework's C64 filter coefficients.** The
+  MiSTer Amstrad core defines no audio filter, so there were no correct values
+  to copy. It is a harmless low-pass, but it models the wrong machine.
 - **The copier reproduces what it can reproduce exactly, and refuses the
   rest** rather than writing a disk that looks finished and is not. That now
   includes sector sizes from 128 to 8192 bytes, tracks of up to ten sectors,
