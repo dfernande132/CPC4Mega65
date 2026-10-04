@@ -853,7 +853,39 @@ begin
    -- mas fiel al hardware real. Ver DECISIONES.md para el razonamiento completo.
    ----------------------------------------------------------------------------------------------
 
-   main_ram_addr_a <= mb_mem_addr(C_CPC_RAM_ADDR_WIDTH-1 downto 0);
+   ----------------------------------------------------------------------------------------------
+   -- CPC4MEGA65 (M4062): un 6128 NO decodifica los bits de banco. Antes de esto, truncar la
+   -- direccion de la MMU a 17 bits dejaba el core diciendo que tenia 192 KB y colgaba los
+   -- diagnosticos reales (CPC Doctor, Amstrad-Diagnostics). Reportado por un usuario.
+   --
+   -- QUE PASABA. La MMU calcula "RAMpage = {1'b0, ~A[8], D[5:3]} + 3" (Amstrad_MMU.v:65) y la
+   -- coloca en ram_A(20:16) (Amstrad_MMU.v:80). Eso son 16 bancos de expansion, porque el core
+   -- de MiSTer en modo 6128 es una maquina de 576 KB a proposito y lo dice su README. Nosotros
+   -- le damos 128 KB y cortabamos a 17 bits, con lo que de los cinco bits de RAMpage solo
+   -- sobrevivia el bit 0: de toda la seleccion de banco llegaba a la memoria LA PARIDAD.
+   --
+   --   RAM base          RAMpage=2  (par)    -> bloque 0   correcto
+   --   banco expansion 0 RAMpage=3  (impar)  -> bloque 1   correcto
+   --   banco expansion 1 RAMpage=4  (par)    -> bloque 0   = LA RAM BASE
+   --   banco expansion 2 RAMpage=5  (impar)  -> bloque 1   alias del banco 0
+   --
+   -- El banco 1 no era "RAM de mas": era una ventana a la propia RAM base de la maquina. Por
+   -- eso el test del banco alto se suicidaba, se sobreescribia a si mismo mientras corria.
+   --
+   -- QUE HACE UN 6128 DE VERDAD. Su expansion de 64 KB esta reflejada por todo el rango de
+   -- 512 KB: C4,C5,C6,C7 acceden a la misma RAM que CC,CD,CE,CF, y los bits de banco se
+   -- ignoran (CPCWiki, "Standard Memory Expansions"). Son dos bloques y solo dos.
+   --
+   -- QUE HACEMOS AHORA. Exactamente eso: bloque 0 si la pagina es la base, bloque 1 para
+   -- CUALQUIER pagina de expansion. No se toca Amstrad_MMU.v - su aritmetica es correcta para
+   -- lo que el core original pretende ser, y el defecto era nuestro al conectarle 128 KB.
+   --
+   -- Los ciclos de ROM no se ven afectados: las ROM tienen BRAM propias direccionadas desde
+   -- mb_cpu_addr(13 downto 0) (ver justo debajo), no desde mb_mem_addr.
+   ----------------------------------------------------------------------------------------------
+
+   main_ram_addr_a <= '0' & mb_mem_addr(15 downto 0) when mb_mem_addr(20 downto 16) = "00010"
+                 else '1' & mb_mem_addr(15 downto 0);
    main_ram_data_a <= mb_cpu_dout;
    main_ram_wren_a <= mb_mem_wr and not mb_romen;
 

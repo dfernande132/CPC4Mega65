@@ -94,7 +94,7 @@ constant SCR_WELCOME : string :=
    --
    -- Los .cor publicados son M4059 MAS este cambio de cadena: una linea de texto en la ROM, sin
    -- efecto funcional. Se anota aqui para que la equivalencia quede escrita y no supuesta.
-   "Status: v1.0 (M4061)\n\n" &
+   "Status: v1.0.1 (M4062)\n\n" &
 
    "Based on MiSTer-devel/Amstrad_MiSTer\n" &
    "Powered by MiSTer2MEGA65,\n" &

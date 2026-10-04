@@ -1,6 +1,29 @@
 CPC4MEGA65 Changelog
 ====================
 
+Version 1.0.1 (build M4062)
+---------------------------
+
+One fix. The core claimed to have **192 KB of RAM instead of 128 KB**, and real
+CPC diagnostic software hung when it tested the upper bank. Reported by a user
+running CPC Doctor and Amstrad-Diagnostics on the released 1.0.
+
+A 6128 does not decode the bank-select bits of the RAM paging register: its
+single 64 KB expansion is mirrored across all eight bank values. The MiSTer core
+this port is built on does decode them, because in 6128 mode it is deliberately
+a 576 KB machine backed by 8 MB of SDRAM. This port gives it 128 KB and was
+truncating the address to fit, which left only the *parity* of the page number
+reaching the memory. The result was that expansion bank 1 did not alias onto
+bank 0 as it should - it landed on the machine's own base RAM. Diagnostics
+counted it as a third 64 KB block, and any program that tested it overwrote
+itself while running.
+
+Expansion accesses now all reach the one expansion block, which is what the
+hardware does. `.research/tb_rampage.vhd` is a GHDL testbench that checks all
+32 page values and fails against the old code.
+
+Nothing else changed: no new features, and the floppy subsystem is untouched.
+
 Version 1.0 (build M4061)
 -------------------------
 
