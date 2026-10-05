@@ -45,3 +45,9 @@ CORE/m2m-rom/osm_const.asm
 
 # CPC4MEGA65: fichero temporal que deja el ensamblador QNICE al montar la ROM
 CORE/m2m-rom/__temp__.asm
+
+# CPC4MEGA65 (M4062): salida de las compilaciones lanzadas desde la raiz del repo.
+# El .gitignore de la plantilla solo cubre CORE/vivado*.log, pero build_core.tcl se
+# invoca con -log y el fichero cae aqui arriba.
+build_*.log
+build-estado.txt
